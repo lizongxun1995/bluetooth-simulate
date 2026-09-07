@@ -559,6 +559,18 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
 身份跑、无包身份，而 Telecom ConnectionService 绑定/PhoneAccount 注册/MediaSession AVRCP
 身份全都要求真实安装的 App 包。门B/门C 必须留在 APK；更新痛点靠 install() 缓解。
 
+**两个追加根因（当晚闭环）**：
+1. **车机一连 HFP 就"正在呼叫"且挂不断 = Telecom 死呼叫残留**：用户在设默认账号前从车机
+   拨出 → Telecom 不知道派给谁 → 呼叫卡在 `SELECT_PHONE_ACCOUNT`（TC@10）永久悬着；每次
+   HFP 连上同步给车机 → 车机显示呼叫中，CHUP 对半初始化呼叫无效，ENDCALL 键也清不掉，
+   **只能手机重启清除**（重启后 mCalls 空）。VPHONE 已设默认去电账号后新拨出不会再产生。
+2. **EMUI 媒体路由坑（mIsPlaying=false 真凶）**：HFP 一连，AudioFlinger 把媒体主输出切到
+   `BLUETOOTH_SCO_CARKIT`（通话通道），A2DP 根本不是输出设备 → 车机收不到流。修 =
+   `AudioTrack.setPreferredDevice(TYPE_BLUETOOTH_A2DP)` 把静音流硬绑 A2DP（API 23+，
+   play() 每次补绑）。实测：绑定后 `mIsPlaying: true`（真音频流上车机）。
+   附带发现：手机重启后车机会**主动回连** A2DP+HFP —— "断开连不回"只发生在手机侧不发起
+   时，GUI"🔌重连"按钮/蓝牙开关循环就是兜底路径。
+
 
 
 1. **总时长始终 0**：`DisplayUpdater.Update()` 触发的 TRACK_CHANGED 里，车机采样的是**旧
