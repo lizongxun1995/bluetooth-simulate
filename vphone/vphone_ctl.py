@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--port", type=int, default=18800, help="PC 侧本地端口(默认 18800)")
     ap.add_argument("cmd", help="start|grant-perms|enable-account|status|incoming|dial|answer|"
                                 "hangup|hold|dtmf|audio-bt|call-audio|track|play|pause|next|prev|"
-                                "jump|silence|autoadvance|playlist|upload|files|del|play-audio|"
+                                "jump|seek|silence|autoadvance|playlist|upload|files|del|play-audio|"
                                 "contacts-load|contacts-file|contacts-clear|contacts-count|"
                                 "bt-state|bt-name|scan|bond|unpair|bt-enable|reconnect|events|"
                                 "wait-event|install")
@@ -145,6 +145,10 @@ def main():
             if not args.rest:
                 sys.exit("!! 用法: jump <序号从0起>")
             print(vp.media_jump(int(args.rest[0])))
+        elif c == "seek":
+            if not args.rest:
+                sys.exit("!! 用法: seek <目标秒>")
+            print(vp.media_seek(int(args.rest[0])))
         elif c == "bt-name":
             print(vp.bt_name(args.name) if args.name else vp.bt_name())
         elif c == "upload":

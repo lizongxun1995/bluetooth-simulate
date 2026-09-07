@@ -65,6 +65,7 @@ PATHS = {
     "autoadvance": "/media/autoadvance",
     "playlist": "/media/playlist",
     "jump": "/media/jump",
+    "seek": "/media/seek",
     "files": "/media/files",
     "diag": "/media/diag",
     "del": "/media/del",
@@ -354,6 +355,10 @@ class VPhone:
     def media_jump(self, idx) -> str:
         """跳到播放列表第 idx 首(0 起)并按当前播放/暂停态就位。"""
         return self.cmd("jump", idx=int(idx))
+
+    def media_seek(self, sec) -> str:
+        """拖动播放进度到第 sec 秒(车机进度条跟随; 车机侧拖动回流为 CAR_SEEK 事件)。"""
+        return self.cmd("seek", pos=int(sec))
 
     def play(self) -> str:
         return self.cmd("play")

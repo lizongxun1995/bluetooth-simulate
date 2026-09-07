@@ -84,6 +84,15 @@ class App:
         r2b = ttk.Frame(f1); r2b.pack(fill="x", padx=4, pady=2)
         ttk.Button(r2b, text="⇧电脑选曲→上传→车机播放", command=self._pick_audio).pack(side="left")
         ttk.Button(r2b, text="🎵播放列表管理", command=self._playlist_mgr).pack(side="left", padx=4)
+        # 进度条: 释放跳转(车机/手机拖动同理回流 CAR_SEEK), 平时 1s 跟随刷新
+        sp = ttk.Frame(f1); sp.pack(fill="x", padx=8, pady=(0, 0))
+        ttk.Label(sp, text="进度s").pack(side="left")
+        self._pos_drag = False
+        self.scale_pos = tk.Scale(sp, from_=0, to=240, orient="horizontal",
+                                  showvalue=True, resolution=1, length=480)
+        self.scale_pos.pack(side="left", fill="x", expand=True, padx=6)
+        self.scale_pos.bind("<ButtonPress-1>", lambda e: setattr(self, "_pos_drag", True))
+        self.scale_pos.bind("<ButtonRelease-1>", self._pos_release)
         self.lbl_media = ttk.Label(f1, text="当前: -(未播放)", foreground="#357")
         self.lbl_media.pack(fill="x", padx=8, pady=(0, 3))
 
@@ -412,6 +421,11 @@ class App:
             return
         self._run(lambda: self.vp.bt_name(n))
 
+    def _pos_release(self, _e=None):
+        self._pos_drag = False
+        v = int(self.scale_pos.get())
+        self._run(lambda: self.vp.media_seek(v))
+
     def _stat_poll(self):
         """后台线程: 1s 刷新"当前曲目/时间"行 —— 车机切歌后 GUI 立即跟上。"""
         while not self._evt_stop.is_set():
@@ -428,6 +442,7 @@ class App:
                     if real and real.group(1) != "none":
                         txt += f"  📄{real.group(1)}"
                     self.q.put(("media", txt))
+                    self.q.put(("pos", (int(pos), int(dur))))
             except Exception:
                 pass
             self._evt_stop.wait(1.0)
@@ -574,6 +589,13 @@ class App:
                     self.lbl_contacts.config(text=f"计数: {payload}")
                 elif kind == "media":
                     self.lbl_media.config(text=payload)
+                elif kind == "pos":
+                    pos, dur = payload
+                    if not self._pos_drag:
+                        if int(self.scale_pos.cget("to")) != dur:
+                            self.scale_pos.config(to=dur)
+                        if abs(self.scale_pos.get() - pos) >= 1:
+                            self.scale_pos.set(pos)
                 elif kind == "call":
                     payload()
         except queue.Empty:

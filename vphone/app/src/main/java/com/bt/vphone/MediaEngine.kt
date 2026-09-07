@@ -102,11 +102,18 @@ object MediaEngine {
                     doPause()
                 }
 
+                // AVRCP 规范没有"绝对定位"直传命令: 车机拖进度条要么走这里(系统栈支持时
+                // 翻成绝对位置), 要么连发 FF/RW 透传键走下面两个回调 —— 三条路都得接住
                 override fun onSeekTo(pos: Long) {
-                    posSec = (pos / 1000).toInt()
-                    mp?.let { try { it.seekTo(posSec * 1000) } catch (_: Exception) {} }
-                    pushState()
-                    EventLog.add(EventLog.CAR_SEEK, "car", "媒体按键【拖进度】(车机或手机通知栏)→${posSec}s")
+                    doSeek(pos, "car", "媒体按键【拖进度】(车机或手机通知栏)")
+                }
+
+                override fun onFastForward() {
+                    doSeek(posSec * 1000L + 10_000L, "car", "媒体按键【快进+10s】(车机或手机通知栏)")
+                }
+
+                override fun onRewind() {
+                    doSeek(posSec * 1000L - 10_000L, "car", "媒体按键【快退-10s】(车机或手机通知栏)")
                 }
             }, main)
             isActive = true
@@ -225,6 +232,32 @@ object MediaEngine {
         pushMeta()
         pushState()
         return "跳转 → ${trackDesc()}${realTag()}"
+    }
+
+    // ---------------- 进度拖动(车机 AVRCP seek / PC 指令共用) ----------------
+
+    /** 最近一次 seek 的时间/目标: MediaPlayer.seekTo 异步生效, 窗口内心跳优先用命令值,
+     *  否则 1s 心跳可能读到旧位置把进度"弹回"一拍 */
+    private var seekAt = 0L
+    private var seekPosMs = 0L
+
+    /** PC 指令拖进度: pos=目标秒 */
+    fun seek(sec: Int): String = doSeek(sec * 1000L, "cmd", "指令拖进度")
+
+    /** 拖进度核心: 夹取到 [0,时长], 真实模式同步 seekTo, 静音流模式只改元数据位置 */
+    private fun doSeek(targetMs: Long, src: String, label: String): String {
+        val dMs = durationSec * 1000L
+        val ms = targetMs.coerceIn(0L, if (dMs > 0) dMs else targetMs)
+        posSec = (ms / 1000).toInt()
+        seekAt = System.currentTimeMillis()
+        seekPosMs = ms
+        mp?.let { try { it.seekTo(ms.toInt()) } catch (_: Exception) {} }
+        pushState()
+        EventLog.add(
+            EventLog.CAR_SEEK, src,
+            "$label→${posSec}s/${durationSec}s${if (mp == null) " (静音流模式, 仅元数据)" else ""}"
+        )
+        return "已跳转: ${trackDesc()}${realTag()}"
     }
 
     fun setAutoAdvance(on: Boolean): String {
@@ -396,8 +429,13 @@ object MediaEngine {
             override fun run() {
                 val m = mp
                 if (m != null) {
-                    // 真实模式: 进度取 MediaPlayer 实际位置(播完由 completion 回调处理)
-                    posSec = try { m.currentPosition / 1000 } catch (_: Exception) { posSec }
+                    // 真实模式: 进度取 MediaPlayer 实际位置(播完由 completion 回调处理);
+                    // 刚下发 seek 的窗口内播放器还可能报旧位置, 用命令值兜住
+                    posSec = try {
+                        if (seekAt > 0 && System.currentTimeMillis() - seekAt < 1500)
+                            (seekPosMs / 1000).toInt()
+                        else m.currentPosition / 1000
+                    } catch (_: Exception) { posSec }
                 } else {
                     posSec++
                     if (posSec >= durationSec) {

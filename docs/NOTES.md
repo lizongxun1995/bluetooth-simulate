@@ -687,6 +687,31 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
   在线+曲名精确），或 HiCar/CarLife 私有通道。用真歌名（青花瓷/周杰伦）实测本车机不拉
   网络歌词 → 该车机 BT 音源无歌词功能，此路不通，已定案。
 
+**追加：vphone 第五轮（车机拖进度条不生效）**
+
+- **表象**：车机上拖播放进度条，手机端无反应（进度不跳、无事件）。
+- **代码面复盘**：`onSeekTo` 早已实现且 `PlaybackState` 里 `ACTION_SEEK_TO` 一直在——
+  但**AVRCP 规范没有"绝对定位"直传命令**，车机拖进度条实际发的是 FAST_FORWARD/REWIND
+  透传键（连发或按住），落到 MediaSession 的 `onFastForward()/onRewind()`——此前未重写
+  = 默认空操作 → "拖了没反应"。
+- **修法（MediaEngine.doSeek 统一核心）**：`onSeekTo`(绝对)/`onFastForward`(+10s)/
+  `onRewind`(-10s)/`/media/seek?pos=N` 四路入口全部收敛到一个 doSeek：夹取 [0,时长]；
+  真实模式同步 `MediaPlayer.seekTo`；静音流模式只改元数据位置；统一落 CAR_SEEK 事件
+  （detail 区分 拖进度/快进/快退/指令）。另修一个隐患：MediaPlayer.seekTo 异步生效，
+  1s 心跳若在 ~1.5s 窗口内读到旧位置会把进度"弹回"一拍 → 窗口内心跳优先用命令值
+  （实测 seek 120s 后 2.6s 稳定在 121s，无弹回）。
+- **真机验证（PC 侧全通）**：真实音频 seek 120s ✓ / 静音流 seek 100s✓(心跳续走 102) /
+  越界 9999 夹到时长 ✓ / CAR_SEEK 落账 ✓。新增 `/media/seek` + lib `media_seek(sec)` +
+  CLI `seek <秒>` + GUI 媒体区**进度条**（释放即跳转，平时 1s 跟随刷新，拖动中不回写）。
+- **EMUI 又一坑（重要）**：`adb shell media dispatch` 实测——`play-pause`/`next` 都能
+  到达 VPhoneMedia 会话（CAR_PAUSE/CAR_NEXT 落账），但 **`rewind` 播放态/暂停态都不产
+  生任何事件**（FF 键名 `fast-forword` 在 usage 里印着但解析器根本不认，EMUI 自己的
+  bug）。即 EMUI 的媒体键注入路径对第三方会话**丢弃 FF/RW 键**。若蓝牙栈的 AVRCP FF/RW
+  也走按键注入路径，则车机快进/快退在华为机上到不了第三方 App——与歌词同类的平台级
+  限制嫌疑。**待车机实测裁决**：拖动/长按快进，看事件流——出 CAR_SEEK=通；啥都没有=
+  EMUI 平台丢弃，如实记录。
+- 重装后例行恢复已做：1 万联系人重载(138s) + 乐库 7 首 mp3 重建播放列表（暂停态待命）。
+
 
 
 1. **总时长始终 0**：`DisplayUpdater.Update()` 触发的 TRACK_CHANGED 里，车机采样的是**旧
