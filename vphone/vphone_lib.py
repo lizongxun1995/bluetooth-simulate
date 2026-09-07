@@ -25,6 +25,7 @@
     assert vp.wait_event("CAR_NEXT", timeout=15)       # 车机上按了下一曲
     vp.contacts_load(10000)                            # 1w 联系人→车机通讯录压测
 """
+import glob
 import os
 import re
 import subprocess
@@ -42,6 +43,19 @@ ACCOUNT_ARGS = f"{PKG}/.VPhoneConnectionService VPHONE 0".split()
 
 class VPhoneError(RuntimeError):
     pass
+
+
+def default_apk():
+    """默认安装包: 优先 vphone/apk/ 打包产物(克隆仓库即带, GUI「安装APK」用),
+    回退 gradle 构建产物 app/build/outputs/apk/debug/app-debug.apk。"""
+    base = os.path.dirname(os.path.abspath(__file__))
+    hits = sorted(
+        glob.glob(os.path.join(base, "apk", "*.apk")),
+        key=os.path.getmtime, reverse=True)
+    if hits:
+        return hits[0]
+    b = os.path.join(base, "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+    return b if os.path.isfile(b) else None
 
 
 # 短名 → HTTP 路径(与 APK Dispatcher 路由对齐; 短名同时用于广播别名)
@@ -502,13 +516,20 @@ class VPhone:
 
     def install(self, apk=None, timeout=120) -> str:
         """adb install -r + 装完自动拉起服务/重建 forward。
-        注意: 部分厂商手机仍会弹一次安装确认(厂商差异大, 不做自动点屏, 需手动点一下)。
-        apk 默认取 vphone 工程构建产物 app-debug.apk。"""
+        apk 默认取 vphone/apk/ 打包产物(仓库自带, 换机器克隆即装), 无则取构建产物。
+        注意: 部分厂商手机仍会弹一次安装确认(厂商差异大, 不做自动点屏, 需手动点一下)。"""
         if apk is None:
-            apk = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+            apk = default_apk()
+            if apk is None:
+                raise VPhoneError(
+                    "未找到 APK: vphone/apk/ 无打包产物, 也无构建产物 (先 gradle assembleDebug)")
         if not os.path.isfile(apk):
-            raise VPhoneError(f"APK 不存在: {apk} (先 gradle assembleDebug)")
+            raise VPhoneError(f"APK 不存在: {apk}")
+        # 华为: 上一次安装残留的安装器进程会拦住新安装 → 先顺手清掉(其他机型无此包, 无害)
+        try:
+            self._adb("shell", "am", "force-stop", "com.android.packageinstaller", timeout=10)
+        except Exception:
+            pass
         try:
             r = self._adb("install", "-r", apk, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -528,6 +549,18 @@ class VPhone:
             pass
         head = self.start()
         return f"安装成功; 服务已拉起: {head}"
+
+    def launch(self) -> str:
+        """拉起 App 界面 + 常驻服务。装完 APK 处于 stopped 态时广播唤不醒服务,
+        必须先 am start 一次 —— GUI「🚀启动App」按钮, 幂等可反复点。"""
+        self._adb("shell", "am", "start", "-n", f"{PKG}/.MainActivity", timeout=15)
+        time.sleep(1)
+        head = self.start()
+        try:
+            st = self.http("/status").splitlines()[0]
+            return f"App 已拉起; 服务应答: {st}"
+        except VPhoneError:
+            return f"App 已拉起, 但服务未应答 HTTP({head}) → 查手机上 vphone 是否被限制自启"
 
     # ================= 事件流/断言辅助 =================
 

@@ -53,6 +53,8 @@ class App:
         self.e_serial = ttk.Entry(top, width=22)
         self.e_serial.pack(side="left", padx=4)
         ttk.Button(top, text="连接", command=lambda: self._connect()).pack(side="left")
+        ttk.Button(top, text="📦安装APK", command=self._install_apk).pack(side="left", padx=4)
+        ttk.Button(top, text="🚀启动App", command=self._launch_app).pack(side="left")
         self.lbl_conn = ttk.Label(top, text="未连接", foreground="#c22")
         self.lbl_conn.pack(side="left", padx=8)
 
@@ -183,6 +185,44 @@ class App:
             except Exception as e:
                 self.q.put(("connfail", f"{e}"))
         self.pool.submit(task)
+
+    def _install_apk(self):
+        """装 vphone/apk/vphone.apk(仓库自带) → 拉服务 → 联系人为0时询问重灌。
+        换机器调试: 连上 USB 点这一个按钮即可完成部署。"""
+        serial = self.e_serial.get().strip() or None
+
+        def task():
+            try:
+                vp = self.vp or VPhone(serial=serial)
+            except Exception as e:
+                self.q.put(("log", f"!! 连接手机失败: {e}"))
+                return
+            try:
+                self.q.put(("log", "📦 安装中(约10-30s; 华为若弹安装确认框请在手机上点一下)…"))
+                self.q.put(("log", vp.install()))
+            except Exception as e:
+                self.q.put(("log", f"!! 安装失败: {e}"))
+                return
+            # 装完重连(重建事件流) + 联系人被清则询问重灌
+            self.q.put(("call", lambda: self._connect()))
+            try:
+                cnt = vp.contacts_count()
+                if re.search(r"vphone=0\b", cnt):
+                    def ask():
+                        import tkinter.messagebox as mb
+                        if mb.askyesno("联系人", "重装后联系人为 0, 现在重灌 1 万个吗?\n(约2.5分钟, 后台写入)"):
+                            self._contacts_load()
+                    self.q.put(("call", ask))
+            except Exception:
+                pass
+        self.pool.submit(task)
+
+    def _launch_app(self):
+        """拉起 App + 常驻服务(装完处于 stopped 态时广播唤不醒, 必须先 am start)。"""
+        if self.vp is None:
+            self.log("!! 先点「连接」(或直接点「📦安装APK」)")
+            return
+        self._run(self.vp.launch)
 
     # ---------- 动作 ----------
     def _run(self, fn):

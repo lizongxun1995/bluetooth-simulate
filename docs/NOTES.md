@@ -730,6 +730,16 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
   4s 内双 profile 回连 + 事件链完整。断连/回连两方向都成了可断言的结构化事件。
 - 重连代码补了一刀：reconnect 起手先 `setPrioBestEffort(d)` 恢复 priority=100
   （防 disconnect 关过 priority 后系统拒绝回连）。
+
+**追加：vphone 第五轮补2：APK 打包进仓库 + GUI 安装/启动（换机器部署一步化）**
+
+- **需求**：换台机器 clone 仓库后不装 Android 构建环境，GUI 里点一下就完成部署。
+- **实现**：`vphone/apk/vphone.apk`（872KB，随 git 分发）+ lib `default_apk()`（优先
+  apk/ 目录，回退构建产物）。GUI 顶部新增「📦安装APK」（install→拉服务→自动重连→
+  联系人为 0 时弹窗询问重灌 1 万）和「🚀启动App」（am start + 服务应答校验 —— 装完
+  App 处于 stopped 态广播唤不醒，必须 am start 一次）。install() 顺手前置 force-stop
+  华为残留安装器；lib 新增 `launch()`；apk/README.md 写明重新构建后要同步覆盖 vphone.apk。
+- 换机器前提：那台机器有 adb + 手机 USB 调试开着（`adb devices` 能看到），其余全 GUI。
 - **重装清联系人行为不定（本轮新发现）**：上一轮重装实测清空 vphone 账号联系人，
   本轮重装实测**没清**（旧 1 万还在，又叠一轮 → 1.33 万→清理重灌）。结论：装完
   **先 `/contacts/count` 再决定是否重载**；重复重载会叠加重复联系人（同名两套），
