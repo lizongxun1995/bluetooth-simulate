@@ -740,6 +740,19 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
   App 处于 stopped 态广播唤不醒，必须 am start 一次）。install() 顺手前置 force-stop
   华为残留安装器；lib 新增 `launch()`；apk/README.md 写明重新构建后要同步覆盖 vphone.apk。
 - 换机器前提：那台机器有 adb + 手机 USB 调试开着（`adb devices` 能看到），其余全 GUI。
+
+**追加：vphone 第五轮补3：GUI 打包成单文件 exe（换机器免装 Python/adb）**
+
+- `python vphone/build_exe.py` → `vphone/dist/vphone_gui.exe`（约13MB，onefile+windowed，
+  内嵌 `apk/vphone.apk` + 本机 adb 及 AdbWinApi/AdbWinUsbApi/libwinpthread DLL）。
+  拷到任意 Windows 机器双击即用，`--serial` 参数照传；唯一外部前提 = 手机 USB 驱动。
+- lib 冻结态支持：`_bundle_dirs()`（PyInstaller `sys.frozen` → `_MEIPASS` + exe 所在
+  目录），`_find_adb`/`default_apk` 优先从这两处取内嵌 adb/apk（先于 PATH，版本可控）。
+- **PyInstaller 坑**：`--specpath build` 会让 **相对** add-data 路径解析到 spec 目录下
+  → add-data 必须给绝对路径（build_exe.py 内部即如此，手工跑命令时踩过）。
+- 验证：冷启动（先 kill adb server）→ exe 自动连上手机建 forward → `/status` 应答 OK；
+  另用探针 exe 确认冻结态 `_MEIPASS/adb.exe`、`_MEIPASS/apk/vphone.apk` 解析正确
+  （「📦安装APK」在 exe 里可用）。onefile 解包+Defender 扫描首发约 5-10s，属正常。
 - **重装清联系人行为不定（本轮新发现）**：上一轮重装实测清空 vphone 账号联系人，
   本轮重装实测**没清**（旧 1 万还在，又叠一轮 → 1.33 万→清理重灌）。结论：装完
   **先 `/contacts/count` 再决定是否重载**；重复重载会叠加重复联系人（同名两套），

@@ -29,6 +29,7 @@ import glob
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -46,14 +47,14 @@ class VPhoneError(RuntimeError):
 
 
 def default_apk():
-    """默认安装包: 优先 vphone/apk/ 打包产物(克隆仓库即带, GUI「安装APK」用),
-    回退 gradle 构建产物 app/build/outputs/apk/debug/app-debug.apk。"""
+    """默认安装包: 优先 exe/脚本自带(打包发行/克隆即装), 回退 gradle 构建产物。"""
     base = os.path.dirname(os.path.abspath(__file__))
-    hits = sorted(
-        glob.glob(os.path.join(base, "apk", "*.apk")),
-        key=os.path.getmtime, reverse=True)
-    if hits:
-        return hits[0]
+    for d in _bundle_dirs() + [base]:
+        hits = sorted(
+            glob.glob(os.path.join(d, "apk", "*.apk")),
+            key=os.path.getmtime, reverse=True)
+        if hits:
+            return hits[0]
     b = os.path.join(base, "app", "build", "outputs", "apk", "debug", "app-debug.apk")
     return b if os.path.isfile(b) else None
 
@@ -102,7 +103,24 @@ PATHS = {
 }
 
 
+def _bundle_dirs():
+    """exe 自带资源的候选目录: PyInstaller onefile 解包目录(_MEIPASS) + exe 所在目录。
+    (打成 exe 后 adb/apk 都内嵌在这两处, 换机器免装 adb)"""
+    dirs = []
+    if getattr(sys, "frozen", False):
+        m = getattr(sys, "_MEIPASS", "")
+        if m:
+            dirs.append(m)
+        dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
+    return dirs
+
+
 def _find_adb(adb="adb"):
+    # 打包成 exe 时优先用内嵌的 adb(先于系统 PATH, 版本可控)
+    for d in _bundle_dirs():
+        cand = os.path.join(d, "adb.exe")
+        if os.path.isfile(cand):
+            return cand
     if os.path.isfile(adb):
         return adb
     for cand in (
