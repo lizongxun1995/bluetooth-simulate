@@ -654,7 +654,13 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
   MediaCodec+AudioTrack 自管大缓冲（4-8s）替换 MediaPlayer。
 - **防御性修复（无论根因都保留）**：`forceMediaRoute()` 播真实音频前释放挂起的 SCO
   （通话中除外，那时 SCO 属于通话）；`pinPlayerA2dp` 绑定失败后台重试 10×500ms（A2DP
-  设备可能晚于播放就绪）；`/media/diag` 一条命令看实际输出设备/SCO 占用/绑定状态。
+  设备可能晚于播放就绪）；`/media/diag` 一条命令看实际输出设备/SCO 占用/绑定状态；
+  VPhoneService 持 PARTIAL_WAKE_LOCK + `adb shell dumpsys deviceidle whitelist
+  +com.bt.vphone` 进 doze 白名单（EMUI 后台限流解码线程 → 欠载，白名单后 60s 欠载
+  3→1 次/分钟，有改善未绝迹，欠载呈突发成串 1.2s×8 次的形态）。
+- **卸载重装会清空 vphone 联系人**：联系人挂在 vphone 账号(account_type=com.bt.vphone)
+  下，重装 APK 触发系统清理（实测 vphone=0 total=回原生量）→ 每次重装后需重新
+  `contacts-load`。
 - **歌词定论（重申）**：标准蓝牙通道不存在歌词传输——AVRCP 1.3-1.6 正在播放元数据只有
   标题/歌手/专辑/时长/曲目号，无歌词字段；A2DP 只传压缩音频码流；Android MediaSession
   也无 LYRICS key 可推。车机显示歌词只有两条真路：车机自己联网按歌名匹配歌词（需车机

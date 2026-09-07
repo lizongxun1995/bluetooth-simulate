@@ -65,6 +65,7 @@ PATHS = {
     "autoadvance": "/media/autoadvance",
     "playlist": "/media/playlist",
     "files": "/media/files",
+    "diag": "/media/diag",
     "del": "/media/del",
     "bt_state": "/bt/state",
     "scan": "/bt/scan",

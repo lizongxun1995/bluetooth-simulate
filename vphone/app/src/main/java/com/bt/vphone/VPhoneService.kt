@@ -15,6 +15,7 @@ import android.util.Log
 class VPhoneService : Service() {
 
     private lateinit var server: ControlServer
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -26,6 +27,12 @@ class VPhoneService : Service() {
         MediaEngine.start()
         server = ControlServer(PORT).also { it.start() }
         startForeground(1, notification("VPhone 虚拟手机运行中", "HTTP :$PORT · 电话账号见日志 · logcat TAG=VPhone"))
+        // EMUI 后台省电会限流解码线程 → A2DP 欠载爆音(滋滋)。持部分 WakeLock 免降频。
+        wakeLock = (getSystemService(Context.POWER_SERVICE) as android.os.PowerManager)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "vphone:core").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         Log.i(
             CallEngine.TAG,
             "服务就绪: HTTP 0.0.0.0:$PORT (PC: adb forward tcp:18800 tcp:$PORT → curl 127.0.0.1:18800)"
@@ -37,6 +44,7 @@ class VPhoneService : Service() {
     override fun onDestroy() {
         server.stop()
         MediaEngine.release()
+        try { wakeLock?.release() } catch (_: Exception) {}
         super.onDestroy()
     }
 
