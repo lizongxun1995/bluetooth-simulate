@@ -103,6 +103,7 @@ object BtEngine {
                     val s = i.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
                     evt("配对状态: ${sName(d)} ${d.address} → ${bondStr(s)}")
                     if (s == BluetoothDevice.BOND_BONDED) {
+                        EventLog.add(EventLog.BT_BONDED, "bt", "已配对: ${sName(d)} ${d.address}")
                         setPrioBestEffort(d)
                         evt("已配对完成 → 若 A2DP/HFP 未自动连, 用 /bt/reconnect?mac=${d.address}")
                     }
@@ -113,19 +114,32 @@ object BtEngine {
                 }
                 BluetoothDevice.ACTION_ACL_CONNECTED -> {
                     val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-                    evt("ACL 链路已建立: ${sName(d)} ${d.address}")
+                    EventLog.add(EventLog.BT_ACL_CONNECTED, "bt", "ACL 已建立: ${sName(d)} ${d.address}")
                 }
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
                     val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-                    evt("ACL 链路已断开: ${sName(d)} ${d.address} (车机侧关蓝牙/离场) → /bt/reconnect 可发起回连")
+                    EventLog.add(
+                        EventLog.BT_ACL_DISCONNECTED, "bt",
+                        "ACL 已断开: ${sName(d)} ${d.address} → /bt/reconnect 可发起回连"
+                    )
                 }
                 BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED -> {
                     val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-                    evt("A2DP 状态: ${sName(d)} → ${profStr(i.getIntExtra(BluetoothProfile.EXTRA_STATE, -1))}")
+                    val s = i.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
+                    if (s == BluetoothProfile.STATE_CONNECTED)
+                        EventLog.add(EventLog.BT_A2DP_CONNECTED, "bt", "A2DP 已连: ${sName(d)}")
+                    if (s == BluetoothProfile.STATE_DISCONNECTED)
+                        EventLog.add(EventLog.BT_A2DP_DISCONNECTED, "bt", "A2DP 已断: ${sName(d)}")
+                    evt("A2DP 状态: ${sName(d)} → ${profStr(s)}")
                 }
                 BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
                     val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-                    evt("HFP 状态: ${sName(d)} → ${profStr(i.getIntExtra(BluetoothProfile.EXTRA_STATE, -1))}")
+                    val s = i.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
+                    if (s == BluetoothProfile.STATE_CONNECTED)
+                        EventLog.add(EventLog.BT_HFP_CONNECTED, "bt", "HFP 已连: ${sName(d)}")
+                    if (s == BluetoothProfile.STATE_DISCONNECTED)
+                        EventLog.add(EventLog.BT_HFP_DISCONNECTED, "bt", "HFP 已断: ${sName(d)}")
+                    evt("HFP 状态: ${sName(d)} → ${profStr(s)}")
                 }
             }
         }

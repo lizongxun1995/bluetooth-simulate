@@ -2,7 +2,8 @@ package com.bt.vphone
 
 /**
  * 命令分发中枢: HTTP(/call/incoming?number=...) 与 adb 广播(cmd=incoming) 共用一套路由。
- * 返回纯文本结果, 同时所有动作/事件落 logcat(TAG=VPhone)。
+ * 返回纯文本结果(例外: /events 返回 JSON), 所有动作/事件落 logcat(TAG=VPhone)。
+ * body = POST 请求体二进制(目前仅 /media/upload 用, 广播通道无 body)。
  */
 object Dispatcher {
 
@@ -16,6 +17,7 @@ object Dispatcher {
         "dtmf" to "/call/dtmf",
         "audio_bt" to "/call/audio-bt",
         "auto_outgoing" to "/call/auto-outgoing",
+        "call_audio" to "/call/audio",
         "track" to "/media/track",
         "play" to "/media/play",
         "pause" to "/media/pause",
@@ -24,6 +26,8 @@ object Dispatcher {
         "silence" to "/media/silence",
         "autoadvance" to "/media/autoadvance",
         "playlist" to "/media/playlist",
+        "files" to "/media/files",
+        "del" to "/media/del",
         "bt_state" to "/bt/state",
         "scan" to "/bt/scan",
         "scan_result" to "/bt/scan-result",
@@ -31,6 +35,12 @@ object Dispatcher {
         "unpair" to "/bt/unpair",
         "reconnect" to "/bt/reconnect",
         "bt_enable" to "/bt/enable",
+        "contacts_load" to "/contacts/load",
+        "contacts_import" to "/contacts/import",
+        "contacts_clear" to "/contacts/clear",
+        "contacts_count" to "/contacts/count",
+        "contacts_status" to "/contacts/status",
+        "events" to "/events",
         "status" to "/status",
         "help" to "/help"
     )
@@ -40,7 +50,7 @@ object Dispatcher {
         return http(path, q)
     }
 
-    fun http(path: String, q: Map<String, String>): String {
+    fun http(path: String, q: Map<String, String>, body: ByteArray? = null): String {
         val p = path.trimEnd('/')
         return try {
             when (p) {
@@ -54,6 +64,11 @@ object Dispatcher {
                 "/call/dtmf" -> CallEngine.dtmf(q["key"] ?: "")
                 "/call/audio-bt" -> CallEngine.audioBluetooth()
                 "/call/auto-outgoing" -> CallEngine.setAutoOutgoing((q["on"] ?: "1") != "0")
+                "/call/audio" ->
+                    if (q["stop"] == "1") CallAudioEngine.stop()
+                    else CallAudioEngine.play(
+                        q["name"] ?: "", (q["loop"] ?: "0") == "1"
+                    )
 
                 "/media/track" -> MediaEngine.setTrack(
                     q["title"] ?: "", q["artist"] ?: "", q["album"] ?: "",
@@ -69,6 +84,11 @@ object Dispatcher {
                     MediaEngine.setAutoAdvance((q["on"] ?: "1") != "0")
                 }
                 "/media/playlist" -> MediaEngine.loadPlaylist(q["text"] ?: "")
+                "/media/upload" -> MediaEngine.saveUpload(
+                    q["name"] ?: "", body ?: ByteArray(0)
+                )
+                "/media/files" -> MediaEngine.files()
+                "/media/del" -> MediaEngine.del(q["name"] ?: "")
 
                 "/bt/state" -> BtEngine.state()
                 "/bt/scan" -> BtEngine.scan()
@@ -79,6 +99,18 @@ object Dispatcher {
                     q["mac"] ?: q["name"] ?: "", (q["fallback"] ?: "1") != "0"
                 )
                 "/bt/enable" -> BtEngine.setEnabled((q["on"] ?: "1") != "0")
+
+                "/contacts/load" -> ContactsEngine.load(
+                    q["count"]?.toIntOrNull() ?: 100, q["prefix"] ?: "联系人"
+                )
+                "/contacts/import" -> ContactsEngine.import(
+                    q["text"] ?: (body?.toString(Charsets.UTF_8) ?: "")
+                )
+                "/contacts/clear" -> ContactsEngine.clear()
+                "/contacts/count" -> ContactsEngine.count()
+                "/contacts/status" -> ContactsEngine.status()
+
+                "/events" -> EventLog.json(q["since"]?.toIntOrNull() ?: 0)
 
                 else -> "未知路径: $p\n${statusAll()}"
             }
@@ -91,10 +123,15 @@ object Dispatcher {
         "VPhone 虚拟手机 OK\n" +
             "${CallEngine.status()}\n" +
             "${MediaEngine.status()}\n" +
-            "最近事件: ${CallEngine.lastEvent}\n" +
+            "${CallAudioEngine.status()}\n" +
+            "${ContactsEngine.status()}\n" +
+            "最近事件: ${EventLog.lastLine()}\n" +
             "---- 控制面 ----\n" +
             "HTTP: curl \"http://<手机IP>:8800/call/incoming?number=13800138000\"\n" +
             "     (PC 亦可 adb forward tcp:18800 tcp:8800 后用 127.0.0.1:18800)\n" +
             "adb : adb shell am broadcast -a com.bt.vphone.CMD --es cmd incoming --es number 13800138000\n" +
-            "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing  /media/track|play|pause|next|prev|silence|autoadvance|playlist  /bt/state|scan|scan-result|bond|unpair|reconnect|enable"
+            "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing|audio  \n" +
+            "     /media/track|play|pause|next|prev|silence|autoadvance|playlist|upload|files|del  \n" +
+            "     /bt/state|scan|scan-result|bond|unpair|reconnect|enable  \n" +
+            "     /contacts/load|import|clear|count|status  /events?since=N(JSON,断言用)"
 }

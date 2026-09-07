@@ -35,3 +35,4 @@ tools/_apidump/
 
 # 资料目录(开发板PDF/教程)体积大且非代码, 不进 git
 资料/
+vphone/test_tone.wav

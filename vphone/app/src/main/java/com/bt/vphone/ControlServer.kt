@@ -62,12 +62,40 @@ class ControlServer(private val port: Int) {
                 val qm = fullPath.indexOf('?')
                 val path = if (qm >= 0) fullPath.substring(0, qm) else fullPath
                 val query = if (qm >= 0) parseQuery(fullPath.substring(qm + 1)) else emptyMap()
-                val result = Dispatcher.http(path, query)
-                Log.i(CallEngine.TAG, "[HTTP] $path → $result")
+                // POST 请求体(/media/upload 推音频文件): 按 Content-Length 精确读
+                val clen = lines.drop(1)
+                    .firstOrNull { it.startsWith("Content-Length:", true) }
+                    ?.substringAfter(':')?.trim()?.toIntOrNull() ?: 0
+                var body: ByteArray? = null
+                if (clen > 0) {
+                    if (clen > 60 * 1024 * 1024) {
+                        respond(s, "413 Payload Too Large", "文件过大(>60MB)")
+                        return
+                    }
+                    body = readN(ins, clen)
+                    if (body == null) {
+                        respond(s, "400 Bad Request", "body 不足 ${clen} 字节")
+                        return
+                    }
+                }
+                val result = Dispatcher.http(path, query, body)
+                Log.i(CallEngine.TAG, "[HTTP] $path${if (clen > 0) " (+${clen}B body)" else ""} → $result")
                 respond(s, "200 OK", result)
             }
         } catch (_: Exception) {
         }
+    }
+
+    /** 精确读 n 字节(上传音频用); 连接断开返回 null。 */
+    private fun readN(ins: InputStream, n: Int): ByteArray? {
+        val out = ByteArray(n)
+        var got = 0
+        while (got < n) {
+            val r = ins.read(out, got, n - got)
+            if (r < 0) return null
+            got += r
+        }
+        return out
     }
 
     /** 读到 \r\n\r\n 为止(请求体忽略, 参数全在查询串)。 */

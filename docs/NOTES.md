@@ -572,6 +572,59 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
    时，GUI"🔌重连"按钮/蓝牙开关循环就是兜底路径。
 
 
+### vphone 第二轮：事件总线/真实音频/联系人/通话音频（台架四需求 + 真机全冒烟通过）
+
+用户四+一需求全部落地（App `f-s轮` 代码: EventLog/ContactsEngine/CallAudioEngine 三新模块）：
+
+1. **车机回流事件接口化（断言用）**：App 内 `EventLog` 环形总线(500条) ——
+   `type(英文稳定)/src(car|cmd|app|bt)/detail(中文)`，`GET /events?since=N` 出 JSON。
+   电话: CAR_ANSWER/CAR_REJECT/CAR_HANGUP/CAR_DIAL/_CAR_HOLD/CAR_UNHOLD/CAR_DTMF；
+   媒体: CAR_PLAY/CAR_PAUSE/CAR_NEXT/CAR_PREV/CAR_STOP/CAR_SEEK；
+   链路: BT_ACL_*/BT_A2DP_*/BT_HFP_*/BT_BONDED；状态: RING_IN/CALL_ACTIVE/CALL_ENDED/...。
+   Python: `vp.events(since=)` / `vp.wait_event("CAR_HANGUP", timeout=15)`（tuple 可多类型,
+   detail 子串过滤, 返回 dict 直接 assert）; CLI `events`(实时流)/`wait-event`; GUI 事件流
+   改 /events 轮询(🚗高亮车机回流)。**wait_event 默认只看调用之后的新事件**（水位对齐），
+   要翻历史用 `since=0`。`dial()` 与车机 ATD 拨出靠 `dialFromCmd` 标记区分
+   （CMD_DIAL vs CAR_DIAL，事件 src 也不同）。
+2. **电脑音频 → 手机 → 车机真实播放**：手写 HTTP 支持 POST body（Content-Length 精确读,
+   60MB 上限）→ `POST /media/upload?name=xx.mp3` 存 App `files/music/`（乐库）。
+   播放列表行格式扩为 `标题|歌手|专辑|秒|文件名`（第5列可选）；有文件走 **MediaPlayer**
+   （USAGE_MEDIA+CONTENT_TYPE_MUSIC, API28+ `setPreferredDevice(A2DP)` 同款防 SCO 抢路），
+   时长/进度取真实值, 播完 MEDIA_TRACK_END 事件+自动连播; 无文件回退静音流。
+   Python: `upload_audio(path)` / `play_audio_files([paths])`(上传+列表+播放一步到位) /
+   `list_audio()/del_audio()`; GUI "⇧电脑选曲→上传→车机播放"+"🎵乐库管理"。
+   **实测**: 5s 440Hz wav → dur=5s(真实), pos 2s→4s 真实推进, `mIsPlaying: true`
+   (A2dpStateMachine Connected, SBC 44.1k stereo) —— 真实音频流上车机 ✅。
+3. **联系人自定义/1w 压测**：`ContactsEngine` 独立账号(account_type=com.bt.vphone)写
+   ContactsProvider → 车机 PBAP 拉的就是它。`/contacts/load?count=10000&prefix=联系人`
+   (后台线程+进度) / `import`(姓名|号码 行) / `clear`(只删本账号) / `count`。
+   权限 READ/WRITE_CONTACTS 由 `grant_perms()`(pm grant ×5, install 后自动跑)。
+   **实测 1w 个 122s**（EMUI Android 10）。注意: 车机侧一般要重连 HFP 或手动刷新通讯录
+   才触发 PBAP 重拉。
+4. **通话中自定义音频（模拟对端说话）**：`CallAudioEngine` —— MediaPlayer 用
+   USAGE_VOICE_COMMUNICATION + CONTENT_TYPE_SPEECH，系统通话中路由 SCO 下行 → 车机
+   扬声器出声；再 `setPreferredDevice(TYPE_BLUETOOTH_SCO)` 双保险。`/call/audio?name=xx
+   &loop=1`(stop=1 停)，无通话时返回 ⚠ 提示（SCO 未建立车机听不到）。实测：idle 告警/
+   dial→3s 自动接通→循环播放链路全通（车机侧听感待用户复测）。
+5. **歌词显示 = 蓝牙通道不存在，定案不做**：AVRCP 1.3~1.6 now-playing 元数据只有
+   标题/歌手/专辑/流派/曲号/时长 —— **无歌词字段**；A2DP 传的是压缩音频裸流, 文件里的
+   ID3/SYLT 歌词也不随流走; Android MediaMetadata 亦无 LYRICS 键可推。车机上能看到歌词
+   的场景全是车机自己联网按歌名拉词(车机音乐App)或 HiCar/CarLife 私有通道。可选实验:
+   用真歌名(如「晴天」/周杰伦)试车机 BT 音乐页是否联网拉词; 否则手机侧无任何推送手段。
+
+**本轮三坑（都已修）**：
+- **EMUI 来电号码恒为 13800138000**：`addNewIncomingCall` extras 里的
+  EXTRA_INCOMING_CALL_ADDRESS 在 EMUI(Android 10) 不进 `ConnectionRequest.address`
+  (恒 null, 之前测试恰好都用默认号所以从未暴露) → `pendingIncomingNumber` 兜底传递。
+- **联系人批量写报 "Too many content provider operations between yield points
+  (max 500/批)"**：250 联系人=750 op 超限 → 每批 ≤150 个(450 op)+批尾
+  `withYieldAllowed(true)`。另 `countWhere` 忘传 selectionArgs(`?` 未绑定, EMUI 静默回空
+  而非抛错) → 计数恒 0, 已修(vphone=10000 total=11263 实证)。
+- **华为安装确认反复"User rejected permissions"**：超时后 InstallStaging 残留框会挡住
+  后续安装(立即失败不等待) → `am force-stop com.android.packageinstaller` 清掉再装;
+  重启手机后第一次安装也可能因 shell 未就绪超时, 等 30s 重试即可。
+
+
 
 1. **总时长始终 0**：`DisplayUpdater.Update()` 触发的 TRACK_CHANGED 里，车机采样的是**旧
    timeline**。修法 = **PushTimeline 要在 Update() 之前 AND 之后各推一次**（后推那次才会被

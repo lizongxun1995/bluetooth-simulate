@@ -33,6 +33,23 @@ object CallEngine {
     var lastEvent: String = "无"
     /** 车机拨出(ATD)后 3s 自动置通话中(模拟对端摘机); 关掉则停在拨号态等 answer */
     var autoAnswerOutgoing = true
+    /** 本方 dial() 指令置位 → onCreateOutgoingConnection 消费, 区分"指令拨出/车机ATD拨出" */
+    @Volatile private var dialFromCmd = false
+
+    fun markDialFromCmd() { dialFromCmd = true }
+
+    fun consumeDialFromCmd(): Boolean {
+        val v = dialFromCmd
+        dialFromCmd = false
+        return v
+    }
+
+    /**
+     * 注入来电的目标号码兜底: EMUI(Android 10) 上 addNewIncomingCall 的 extras 里的
+     * EXTRA_INCOMING_CALL_ADDRESS 不会被填进 ConnectionRequest.address(恒为 null),
+     * ConnectionService 侧用它兜底 —— 否则车机/手机来电界面永远显示 13800138000。
+     */
+    @Volatile var pendingIncomingNumber: String? = null
 
     val handle: PhoneAccountHandle by lazy {
         PhoneAccountHandle(ComponentName(app, VPhoneConnectionService::class.java), "VPHONE")
@@ -86,6 +103,7 @@ object CallEngine {
             val extras = Bundle().apply {
                 putString(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS, number)
             }
+            pendingIncomingNumber = number
             telecom().addNewIncomingCall(handle, extras)
             setState("ringing", number)
             "来电已注入: $number —— 等待车机弹来电UI"
@@ -100,6 +118,7 @@ object CallEngine {
             val extras = Bundle().apply {
                 putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
             }
+            markDialFromCmd()
             telecom().placeCall(Uri.parse("tel:" + Uri.encode(number)), extras)
             "去电已提交: $number —— 车机应显示拨号态, 随后 answer 置通话中"
         } catch (e: Exception) {
@@ -112,6 +131,7 @@ object CallEngine {
         return try {
             c.setActive()
             setState("active")
+            EventLog.add(EventLog.CALL_ACTIVE, "cmd", "指令接听 → active")
             "已置为通话中(setActive)"
         } catch (e: Exception) {
             "接听失败: ${e.message}"
@@ -120,6 +140,7 @@ object CallEngine {
 
     fun hangup(): String {
         val c = connection ?: return "无通话"
+        EventLog.add(EventLog.CALL_ENDED, "cmd", "指令挂断 ($number)")
         return try {
             c.setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
             c.destroy()

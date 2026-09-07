@@ -3,17 +3,21 @@
 """vphone 图形控制台 —— 基于 vphone_lib.VPhone 的 tkinter 简易界面。
 
 运行: python vphone_gui.py [--serial 手机序列号]
-功能: 媒体(门B)/电话(门C)/蓝牙扫描配对 全按钮化 + 实时事件流(车机按键/配对状态)。
+功能: 媒体(门B: 元数据+电脑音频推车机)/电话(门C: 含通话自定义音频)/联系人(1w压测)/
+      蓝牙扫描配对 全按钮化 + 实时结构化事件流(车机按键回流 CAR_*)。
 """
 import argparse
 import os
 import queue
 import sys
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 from vphone_lib import VPhone, VPhoneError
+
+AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus")
 
 
 class App:
@@ -24,11 +28,12 @@ class App:
 
         self.root = root
         root.title("VPhone 蓝牙测试控制台 (虚拟手机)")
-        root.geometry("980x720")
+        root.geometry("1040x760")
         self.q: "queue.Queue[tuple]" = queue.Queue()
-        self.pool = ThreadPoolExecutor(max_workers=2)
+        self.pool = ThreadPoolExecutor(max_workers=3)
         self.vp: VPhone | None = None
         self.bt_devs: list[dict] = []
+        self._evt_stop = threading.Event()
 
         self._build()
         root.after(100, self._drain)
@@ -57,7 +62,7 @@ class App:
         left.pack(side="left", fill="both", expand=True)
 
         # ---- 媒体(门B) ----
-        f1 = ttk.LabelFrame(left, text="媒体 (门B: 元数据→车机 AVRCP; 车机按键回流见事件流)")
+        f1 = ttk.LabelFrame(left, text="媒体 (门B: 元数据→车机AVRCP; 电脑音频→车机真实播放; 车机按键回流见事件流)")
         f1.pack(fill="x", pady=2)
         r1 = ttk.Frame(f1); r1.pack(fill="x", padx=4, pady=2)
         for label, attr, default, w in (("标题", "e_title", "青花瓷", 22),
@@ -76,9 +81,12 @@ class App:
         ttk.Checkbutton(r2, text="静音流(保活A2DP)", variable=self.var_silence,
                         command=self._set_silence).pack(side="left", padx=10)
         ttk.Button(r2, text="载入demo播放列表", command=self._load_playlist).pack(side="left", padx=2)
+        r2b = ttk.Frame(f1); r2b.pack(fill="x", padx=4, pady=2)
+        ttk.Button(r2b, text="⇧电脑选曲→上传→车机播放", command=self._pick_audio).pack(side="left")
+        ttk.Button(r2b, text="🎵乐库管理", command=self._music_lib).pack(side="left", padx=4)
 
         # ---- 电话(门C) ----
-        f2 = ttk.LabelFrame(left, text="电话 (门C: 虚拟来电/去电, 全模拟无需SIM; 车机接听挂断回流见事件流)")
+        f2 = ttk.LabelFrame(left, text="电话 (门C: 虚拟来电/去电; 车机接听/挂断/拨出回流见事件流)")
         f2.pack(fill="x", pady=2)
         r3 = ttk.Frame(f2); r3.pack(fill="x", padx=4, pady=2)
         ttk.Label(r3, text="号码:").pack(side="left")
@@ -94,6 +102,30 @@ class App:
         self.var_autoout = tk.BooleanVar(value=True)
         ttk.Checkbutton(r3, text="车机拨出3s自动接通", variable=self.var_autoout,
                         command=self._set_auto_outgoing).pack(side="left", padx=10)
+        r3b = ttk.Frame(f2); r3b.pack(fill="x", padx=4, pady=2)
+        ttk.Label(r3b, text="通话音频(对端说话):").pack(side="left")
+        self.e_caudio = ttk.Entry(r3b, width=24)
+        self.e_caudio.pack(side="left", padx=4)
+        self.var_caloop = tk.BooleanVar(value=False)
+        ttk.Checkbutton(r3b, text="循环", variable=self.var_caloop).pack(side="left")
+        ttk.Button(r3b, text="▶播放(需通话中)",
+                   command=self._call_audio).pack(side="left", padx=4)
+        ttk.Button(r3b, text="⏹停止", command=lambda: self._run(self.vp.call_audio_stop)).pack(side="left")
+        ttk.Button(r3b, text="乐库第一个", command=self._call_audio_first).pack(side="left", padx=4)
+
+        # ---- 联系人 ----
+        f2b = ttk.LabelFrame(left, text="联系人 (自定义/批量1w → 车机 PBAP 通讯录压测; 只写 vphone 账号)")
+        f2b.pack(fill="x", pady=2)
+        r5 = ttk.Frame(f2b); r5.pack(fill="x", padx=4, pady=2)
+        self.lbl_contacts = ttk.Label(r5, text="计数: ?")
+        self.lbl_contacts.pack(side="left", padx=8)
+        ttk.Label(r5, text="数量:").pack(side="left")
+        self.e_cnt = ttk.Entry(r5, width=8); self.e_cnt.insert(0, "10000")
+        self.e_cnt.pack(side="left", padx=2)
+        ttk.Button(r5, text="批量生成", command=self._contacts_load).pack(side="left", padx=2)
+        ttk.Button(r5, text="导入txt(姓名|号码)", command=self._contacts_file).pack(side="left", padx=2)
+        ttk.Button(r5, text="清空", command=self._contacts_clear).pack(side="left", padx=2)
+        ttk.Button(r5, text="刷新计数", command=self._contacts_refresh).pack(side="left", padx=2)
 
         # ---- 蓝牙 ----
         f3 = ttk.LabelFrame(left, text="蓝牙 (扫描/配对不出App; 已配对设备带 [A2DP已连]/[HFP已连] 标记)")
@@ -109,14 +141,15 @@ class App:
         self.lb_bt.pack(fill="both", expand=True, padx=4, pady=2)
 
         # ---- 事件流 ----
-        f4 = ttk.LabelFrame(body, text="事件流 (logcat TAG=VPhone: 车机按键/配对状态/命令回执)")
+        f4 = ttk.LabelFrame(body, text="事件流 (结构化 /events: 🚗=车机回流 ⌨=指令; CAR_*/BT_*/... 可断言)")
         f4.pack(side="left", fill="both", expand=True, padx=(6, 0))
-        self.txt = scrolledtext.ScrolledText(f4, width=52, state="disabled",
+        self.txt = scrolledtext.ScrolledText(f4, width=56, state="disabled",
                                              font=("Consolas", 9),
                                              background="#111", foreground="#ddd")
         self.txt.pack(fill="both", expand=True, padx=4, pady=4)
-        self.txt.tag_configure("btn", foreground="#ffd166")
+        self.txt.tag_configure("car", foreground="#ffd166")
         self.txt.tag_configure("bt", foreground="#7ec8ff")
+        self.txt.tag_configure("cmd", foreground="#9f9")
 
     # ---------- 连接 ----------
     def _connect(self, serial=None):
@@ -125,7 +158,7 @@ class App:
         def task():
             try:
                 vp = VPhone(serial=serial, autostart=True)
-                vp.on_event = lambda line: self.q.put(("evt", line))
+                vp.on_event = self._logcat_line
                 vp.start_events()
                 self.q.put(("ready", vp))
             except Exception as e:
@@ -168,6 +201,112 @@ class App:
     def _set_auto_outgoing(self):
         self._run(lambda: self.vp.set_auto_outgoing(self.var_autoout.get()))
 
+    def _pick_audio(self):
+        """电脑上选音频文件 → 上传手机乐库 → 生成播放列表 → 播放(车机真实出声)。"""
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(
+            title="选择音频文件(可多选)", filetypes=[("音频", " ".join(AUDIO_EXTS)), ("所有文件", "*.*")])
+        if not paths:
+            return
+
+        def task():
+            try:
+                self.q.put(("log", f"推送 {len(paths)} 个文件并播放…"))
+                self.q.put(("log", self.vp.play_audio_files(list(paths))))
+            except Exception as e:
+                self.q.put(("log", f"[错误] {e}"))
+        self.pool.submit(task)
+
+    def _music_lib(self):
+        """乐库管理小窗: 列表 + 播放选中/删除/刷新。"""
+        tk, ttk = self.tk, self.ttk
+        if self.vp is None:
+            self.log("!! 未连接")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("手机乐库 (/media/files)")
+        win.geometry("420x360")
+        lb = tk.Listbox(win, height=12)
+        lb.pack(fill="both", expand=True, padx=6, pady=4)
+
+        def refresh():
+            lb.delete(0, "end")
+            try:
+                for f in self.vp.list_audio():
+                    lb.insert("end", f'{f["name"]}  ({f["kb"]}KB)')
+            except Exception as e:
+                lb.insert("end", f"!! {e}")
+
+        def sel_name():
+            s = lb.curselection()
+            if not s:
+                return None
+            return lb.get(s[0]).split("(")[0].strip()
+
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=6, pady=2)
+        ttk.Button(bar, text="▶播放选中", command=lambda: self._run(
+            lambda: self.vp.playlist_audio([sel_name()])) if sel_name() else None).pack(side="left")
+        ttk.Button(bar, text="🗑删除选中", command=lambda: (
+            self._run(lambda: self.vp.del_audio(sel_name())), refresh()) if sel_name() else None).pack(side="left", padx=4)
+        ttk.Button(bar, text="↻刷新", command=refresh).pack(side="left")
+        refresh()
+
+    def _call_audio(self):
+        name = self.e_caudio.get().strip()
+        if not name:
+            self.log("!! 先填乐库文件名(或点「乐库第一个」)")
+            return
+        self._run(lambda: self.vp.call_audio(name, loop=self.var_caloop.get()))
+
+    def _call_audio_first(self):
+        def task():
+            try:
+                fs = self.vp.list_audio()
+                if not fs:
+                    self.q.put(("log", "乐库为空, 先「⇧电脑选曲」上传"))
+                    return
+                self.q.put(("log", f"通话音频 → {fs[0]['name']}"))
+                self.q.put(("log", self.vp.call_audio(fs[0]["name"], loop=self.var_caloop.get())))
+            except Exception as e:
+                self.q.put(("log", f"[错误] {e}"))
+        self.pool.submit(task)
+
+    def _contacts_load(self):
+        try:
+            n = int(self.e_cnt.get() or "0")
+        except ValueError:
+            self.log("!! 数量须为整数")
+            return
+
+        def task():
+            try:
+                self.q.put(("log", f"批量写入 {n} 个联系人(1w 约几十秒)…"))
+                self.q.put(("log", self.vp.contacts_load(n)))
+                self.q.put(("log", self.vp.contacts_count()))
+            except Exception as e:
+                self.q.put(("log", f"[错误] {e}"))
+        self.pool.submit(task)
+
+    def _contacts_file(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(title="联系人文件(每行: 姓名|号码 或 姓名,号码)",
+                                          filetypes=[("文本", "*.txt *.csv"), ("所有文件", "*.*")])
+        if not path:
+            return
+        self._run(lambda: self.vp.contacts_import(file=path))
+
+    def _contacts_clear(self):
+        self._run(lambda: self.vp.contacts_clear())
+
+    def _contacts_refresh(self):
+        def task():
+            try:
+                self.q.put(("contacts", self.vp.contacts_count()))
+            except Exception as e:
+                self.q.put(("log", f"[错误] {e}"))
+        self.pool.submit(task)
+
     def _reconnect_sel(self):
         """列表选中了设备就重连它; 没选就自动重连第一台已配对设备。"""
         sel = self.lb_bt.curselection()
@@ -201,6 +340,30 @@ class App:
         if d:
             self._run(lambda: self.vp.bt_unpair(d["mac"]))
 
+    # ---------- 事件轮询(结构化 /events) ----------
+    def _evt_poll(self):
+        """后台线程: /events 轮询 → 事件流窗口。车机回流(src=car)高亮。"""
+        last = 0
+        first = True
+        while not self._evt_stop.is_set():
+            try:
+                r = self.vp.events(since=last)
+                last = r["last"]
+                if first:   # 首拉只对齐水位
+                    first = False
+                else:
+                    for e in r["events"]:
+                        self.q.put(("tevt", e))
+            except Exception:
+                pass
+            self._evt_stop.wait(0.5)
+
+    def _logcat_line(self, line):
+        """logcat 兜底通道: 结构化事件已由 /events 呈现, 过滤掉重复的 [事件# 行。"""
+        if "[事件#" in line:
+            return
+        self.q.put(("evt", line))
+
     # ---------- 主线程泵 ----------
     def _drain(self):
         try:
@@ -209,8 +372,14 @@ class App:
                 if kind == "log":
                     self.log(payload)
                 elif kind == "evt":
-                    tag = "btn" if "车机" in payload else ("bt" if "[蓝牙]" in payload else None)
+                    tag = "bt" if "[蓝牙]" in payload else None
                     self.log(payload, tag=tag)
+                elif kind == "tevt":
+                    e = payload
+                    ts = time.strftime("%H:%M:%S", time.localtime(e["ts"] / 1000))
+                    mark = "🚗" if e["src"] == "car" else ("⌨" if e["src"] == "cmd" else " ")
+                    tag = "car" if e["src"] == "car" else ("bt" if e["type"].startswith("BT_") else "cmd")
+                    self.log(f'{mark} {ts} #{e["id"]} {e["type"]} {e["detail"]}', tag=tag)
                 elif kind == "ready":
                     self.vp = payload
                     self.e_serial.delete(0, "end")
@@ -219,9 +388,12 @@ class App:
                                          foreground="#0a7")
                     self.log("=== 已连接, 服务已拉起 ===")
                     self._run(self.vp.bt_state)
-                    # 一次性环境加固(幂等): 配对弹窗自动确认 + 车机拨出走 VPhone 账号
+                    # 一次性环境加固(幂等): 授权/配对自动确认/车机拨出走 VPhone 账号
+                    self._run(self.vp.grant_perms)
                     self._run(self.vp.enable_autoconfirm)
                     self._run(self.vp.set_auto_outgoing(True))
+                    self._contacts_refresh()
+                    threading.Thread(target=self._evt_poll, daemon=True).start()
                 elif kind == "connfail":
                     self.lbl_conn.config(text="连接失败", foreground="#c22")
                     self.log("!! 连接失败: " + payload)
@@ -230,6 +402,8 @@ class App:
                     self.lb_bt.delete(0, "end")
                     for d in payload:
                         self.lb_bt.insert("end", f"{d['name']}  {d['mac']}  {d['rssi']}dBm")
+                elif kind == "contacts":
+                    self.lbl_contacts.config(text=f"计数: {payload}")
         except queue.Empty:
             pass
         self.root.after(100, self._drain)
@@ -244,6 +418,7 @@ class App:
 
     def _on_close(self):
         try:
+            self._evt_stop.set()
             if self.vp:
                 self.vp.stop_events()
             self.pool.shutdown(wait=False)
