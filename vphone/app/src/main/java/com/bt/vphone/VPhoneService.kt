@@ -20,6 +20,7 @@ class VPhoneService : Service() {
         super.onCreate()
         CallEngine.init(this)
         MediaEngine.init(this)
+        BtEngine.init(this)
         val acct = CallEngine.registerAccount()
         Log.i(CallEngine.TAG, acct)
         MediaEngine.start()
@@ -27,7 +28,7 @@ class VPhoneService : Service() {
         startForeground(1, notification("VPhone 虚拟手机运行中", "HTTP :$PORT · 电话账号见日志 · logcat TAG=VPhone"))
         Log.i(
             CallEngine.TAG,
-            "服务就绪: HTTP 0.0.0.0:$PORT (PC: adb reverse tcp:$PORT tcp:$PORT → curl 127.0.0.1:$PORT)"
+            "服务就绪: HTTP 0.0.0.0:$PORT (PC: adb forward tcp:18800 tcp:$PORT → curl 127.0.0.1:18800)"
         )
     }
 

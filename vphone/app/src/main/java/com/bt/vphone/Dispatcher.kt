@@ -23,6 +23,12 @@ object Dispatcher {
         "silence" to "/media/silence",
         "autoadvance" to "/media/autoadvance",
         "playlist" to "/media/playlist",
+        "bt_state" to "/bt/state",
+        "scan" to "/bt/scan",
+        "scan_result" to "/bt/scan-result",
+        "bond" to "/bt/bond",
+        "unpair" to "/bt/unpair",
+        "bt_enable" to "/bt/enable",
         "status" to "/status",
         "help" to "/help"
     )
@@ -60,6 +66,13 @@ object Dispatcher {
                     MediaEngine.setAutoAdvance((q["on"] ?: "1") != "0")
                 }
                 "/media/playlist" -> MediaEngine.loadPlaylist(q["text"] ?: "")
+
+                "/bt/state" -> BtEngine.state()
+                "/bt/scan" -> BtEngine.scan()
+                "/bt/scan-result" -> BtEngine.scanResult()
+                "/bt/bond" -> BtEngine.bond(q["mac"] ?: q["name"] ?: "")
+                "/bt/unpair" -> BtEngine.unpair(q["mac"] ?: q["name"] ?: "")
+                "/bt/enable" -> BtEngine.setEnabled((q["on"] ?: "1") != "0")
 
                 else -> "未知路径: $p\n${statusAll()}"
             }

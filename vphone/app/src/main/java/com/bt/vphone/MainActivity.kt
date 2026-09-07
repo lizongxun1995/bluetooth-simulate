@@ -58,6 +58,13 @@ class MainActivity : Activity() {
             Manifest.permission.READ_PHONE_STATE
         )
         if (Build.VERSION.SDK_INT >= 26) wanted.add(Manifest.permission.ANSWER_PHONE_CALLS)
+        // 蓝牙扫描/配对: 31- 靠位置权限出扫描结果, 31+ 用新粒度权限
+        if (Build.VERSION.SDK_INT >= 31) {
+            wanted.add(Manifest.permission.BLUETOOTH_SCAN)
+            wanted.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            wanted.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
         val need = wanted.filter {
             checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
         }
