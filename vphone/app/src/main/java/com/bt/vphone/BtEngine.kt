@@ -298,8 +298,52 @@ object BtEngine {
         return sb.toString().trim()
     }
 
-    /** 配对完成后把 A2DP/HFP priority 置 ON(100), 保证系统自动回连愿意连它 */
-    private fun setPrioBestEffort(d: BluetoothDevice) {
+    /**
+     * 授权车机访问 联系人/通话记录/信息(PBAP/MAP) —— 车机能拉通讯录的前提。
+     * 优先反射 setPhonebookAccessPermission(1)/setMessageAccessPermission(1)(隐藏API,
+     * 部分ROM直接可写); 被系统权限挡住时 → 靠无障碍自动点授权弹窗(已扩到联系人授权框)
+     * 或人工一次: 设置→蓝牙→该设备→「共享联系人/访问通讯录」开关。
+     */
+    @SuppressLint("MissingPermission")
+    fun allowCarAccess(target: String): String {
+        val ad = adapter ?: return "无蓝牙适配器"
+        if (target.isBlank()) return "用法: /bt/allow-car?mac=<MAC或名字片段>"
+        val d = ad.bondedDevices.firstOrNull {
+            it.address.equals(target, true) || sName(it).contains(target, true)
+        } ?: return "未找到已配对设备: $target (/bt/state 查列表)"
+        val sb = StringBuilder("授权 ${sName(d)} ${d.address}:\n")
+
+        fun permGet(name: String): String = try {
+            val m: Method = d.javaClass.getMethod(name)
+            when (m.invoke(d) as? Int) {
+                1 -> "ALLOWED"; 2 -> "FORBIDDEN"; else -> "UNKNOWN"
+            }
+        } catch (e: Throwable) {
+            "不可用(${cause(e)})"
+        }
+
+        fun permSet(name: String, v: Int): String = try {
+            val m: Method = d.javaClass.getMethod(name, Int::class.javaPrimitiveType)
+            if (m.invoke(d, v) as? Boolean == true) "OK" else "返回false"
+        } catch (e: Throwable) {
+            "被拒(${cause(e)})"
+        }
+
+        sb.append("PBAP联系人: 之前=${permGet("getPhonebookAccessPermission")} → ${permSet("setPhonebookAccessPermission", 1)}\n")
+        sb.append("MAP信息:     之前=${permGet("getMessageAccessPermission")} → ${permSet("setMessageAccessPermission", 1)}\n")
+        sb.append("SIM卡:       之前=${permGet("getSimAccessPermission")} → ${permSet("setSimAccessPermission", 1)}\n")
+        sb.append("现在: PBAP=${permGet("getPhonebookAccessPermission")} MAP=${permGet("getMessageAccessPermission")}\n")
+        val ok = permGet("getPhonebookAccessPermission") == "ALLOWED"
+        sb.append(
+            if (ok) "✓ 车机已可拉通讯录 → 车机上刷新通讯录/重连蓝牙即触发 PBAP 下载"
+            else "⚠ 反射被系统权限挡住 → 走弹窗自动点(重新触发授权框)或人工一次:\n" +
+                "   设置→蓝牙→${sName(d)}→开启「共享联系人/访问通讯录」"
+        )
+        evt("车机访问授权: ${sName(d)} PBAP=${permGet("getPhonebookAccessPermission")}")
+        return sb.toString()
+    }
+
+    /** 配对完成后把 A2DP/HFP priority 置 ON(100), 保证系统自动回连愿意连它 */    private fun setPrioBestEffort(d: BluetoothDevice) {
         val proxies = listOf(a2dp to "A2DP", headset to "HFP")
         for (p in proxies) {
             val proxy = p.first ?: continue

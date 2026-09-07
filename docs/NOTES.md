@@ -624,6 +624,15 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
   后续安装(立即失败不等待) → `am force-stop com.android.packageinstaller` 清掉再装;
   重启手机后第一次安装也可能因 shell 未就绪超时, 等 30s 重试即可。
 
+**追加：车机拉不到通讯录（PBAP 授权）**：车机提示"需要手机打开同步联系人权限" = 手机侧
+未授权该设备 PBAP。三层方案（`/bt/allow-car`，GUI"📇授权车机拉通讯录"）：
+① 反射 `setPhonebookAccessPermission(1)/setMessageAccessPermission(1)/setSimAccessPermission(1)`
+  （隐藏 API，部分 ROM 直接可写，EMUI 大概率被 BLUETOOTH_PRIVILEGED 挡）；
+② AutoPairService 扩词：系统弹窗包名(com.android.bluetooth/settings/systemui)里出现
+  "联系人/通讯录/通话记录 + 蓝牙/访问"特征 → 自动点「允许」（重配对/重连触发授权框时无人值守）；
+③ 人工一次：设置→蓝牙→设备→「共享联系人/访问通讯录」开关。
+授权后车机要**重新触发 PBAP**（车机通讯录刷新/蓝牙重连）才会拉到新数据。
+
 
 
 1. **总时长始终 0**：`DisplayUpdater.Update()` 触发的 TRACK_CHANGED 里，车机采样的是**旧

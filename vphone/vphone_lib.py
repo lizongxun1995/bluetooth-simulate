@@ -72,6 +72,7 @@ PATHS = {
     "bond": "/bt/bond",
     "unpair": "/bt/unpair",
     "reconnect": "/bt/reconnect",
+    "allow_car": "/bt/allow-car",
     "bt_enable": "/bt/enable",
     "contacts_load": "/contacts/load",
     "contacts_import": "/contacts/import",
@@ -433,6 +434,18 @@ class VPhone:
             if not target:
                 return "(无已配对设备, 先 bt_bond)"
         return self.cmd("reconnect", mac=target, fallback="1" if fallback else "0")
+
+    def bt_allow_car(self, target=None) -> str:
+        """授权车机访问联系人/通话记录(PBAP/MAP) —— 车机能拉通讯录的前提。
+        target=None 时自动选第一台带 [HFP已连] 的设备。反射失败时返回手动路径指引。"""
+        if target is None:
+            for line in self.bt_state().splitlines():
+                if "已配对:" in line and "[HFP已连]" in line:
+                    target = line.split("已配对:", 1)[1].strip().split()[-1]
+                    break
+            if not target:
+                return "(没找到已连 HFP 的设备, 传 target=MAC 或先连接)"
+        return self.cmd("allow_car", mac=target)
 
     def bt_enable(self, on=True) -> str:
         return self.cmd("bt_enable", on="1" if on else "0")

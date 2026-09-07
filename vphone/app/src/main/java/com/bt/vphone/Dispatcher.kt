@@ -34,6 +34,7 @@ object Dispatcher {
         "bond" to "/bt/bond",
         "unpair" to "/bt/unpair",
         "reconnect" to "/bt/reconnect",
+        "allow_car" to "/bt/allow-car",
         "bt_enable" to "/bt/enable",
         "contacts_load" to "/contacts/load",
         "contacts_import" to "/contacts/import",
@@ -98,6 +99,7 @@ object Dispatcher {
                 "/bt/reconnect" -> BtEngine.reconnect(
                     q["mac"] ?: q["name"] ?: "", (q["fallback"] ?: "1") != "0"
                 )
+                "/bt/allow-car" -> BtEngine.allowCarAccess(q["mac"] ?: q["name"] ?: "")
                 "/bt/enable" -> BtEngine.setEnabled((q["on"] ?: "1") != "0")
 
                 "/contacts/load" -> ContactsEngine.load(

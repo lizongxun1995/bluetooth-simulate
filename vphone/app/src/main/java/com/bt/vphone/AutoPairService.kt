@@ -34,10 +34,20 @@ class AutoPairService : AccessibilityService() {
 
         val texts = mutableListOf<String>()
         collect(root, texts, 0)
-        val looksPairing = pkg == "com.android.bluetooth" || texts.any {
+        // ① 配对确认框: 蓝牙包名 或 配对特征词(任意包)
+        val pairingHit = texts.any {
             it.contains("配对") || it.contains("pairing", true) ||
                 (it.contains("bluetooth", true) && it.contains("pair", true))
         }
+        // ② 联系人/通话记录授权框(PBAP): 车机拉通讯录时系统弹"允许XX访问联系人"
+        //    只在系统弹窗包名里认特征词, 防止误点普通App(如通讯录本体)里的按钮
+        val contactHit = texts.any {
+            (it.contains("联系人") || it.contains("通讯录") || it.contains("通话记录") ||
+                it.contains("phonebook", true)) &&
+                (it.contains("蓝牙") || it.contains("访问") || it.contains("bluetooth", true))
+        }
+        val sysDlg = pkg == "com.android.settings" || pkg == "com.android.systemui"
+        val looksPairing = pkg == "com.android.bluetooth" || pairingHit || (sysDlg && contactHit)
         if (!looksPairing) return
 
         val btn = findPositive(root, 0) ?: return
@@ -45,7 +55,7 @@ class AutoPairService : AccessibilityService() {
         val clicked = clickIt(btn)
         if (clicked) {
             lastClickAt = System.currentTimeMillis()
-            evt("配对弹窗已自动点「$label」(窗口=$pkg)")
+            evt("蓝牙弹窗已自动点「$label」(窗口=$pkg)")
         }
     }
 

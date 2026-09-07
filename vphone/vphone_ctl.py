@@ -187,6 +187,8 @@ def main():
             print(vp.bt_enable(args.on != "0"))
         elif c == "reconnect":
             print(vp.bt_reconnect(args.mac))
+        elif c == "allow-car":
+            print(vp.bt_allow_car(args.mac))
         elif c == "auto-outgoing":
             print(vp.set_auto_outgoing(args.on != "0"))
         elif c == "enable-autoconfirm":
