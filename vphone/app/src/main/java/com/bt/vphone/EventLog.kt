@@ -34,6 +34,7 @@ object EventLog {
     const val CALL_AUDIO_END = "CALL_AUDIO_END"
     /** 蓝牙链路 */ const val BT_ACL_CONNECTED = "BT_ACL_CONNECTED"
     const val BT_ACL_DISCONNECTED = "BT_ACL_DISCONNECTED"
+    const val BT_DISCONNECT = "BT_DISCONNECT"
     const val BT_A2DP_CONNECTED = "BT_A2DP_CONNECTED"
     const val BT_A2DP_DISCONNECTED = "BT_A2DP_DISCONNECTED"
     const val BT_HFP_CONNECTED = "BT_HFP_CONNECTED"

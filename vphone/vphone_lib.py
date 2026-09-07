@@ -74,6 +74,7 @@ PATHS = {
     "scan_result": "/bt/scan-result",
     "bond": "/bt/bond",
     "unpair": "/bt/unpair",
+    "bt_disconnect": "/bt/disconnect",
     "reconnect": "/bt/reconnect",
     "allow_car": "/bt/allow-car",
     "bt_name": "/bt/name",
@@ -456,6 +457,15 @@ class VPhone:
 
     def bt_unpair(self, target) -> str:
         return self.cmd("unpair", mac=target)
+
+    def bt_disconnect(self, mac=None, force=False) -> str:
+        """断开与设备的蓝牙连接(保持配对) —— 车机断连/回连测试场景。
+        mac=None 时自动选当前已连接(A2DP/HFP)那台; force=反射全被系统权限拒时
+        兜底直接关蓝牙。断链/回链都会落 ACL/A2DP/HFP 结构化事件可断言。"""
+        p = {"force": "1" if force else "0"}
+        if mac:
+            p["mac"] = mac
+        return self.cmd("bt_disconnect", **p)
 
     def bt_reconnect(self, target=None, fallback=True) -> str:
         """断线重连(手机侧主动发起)。target=None 时自动选第一台已配对设备。

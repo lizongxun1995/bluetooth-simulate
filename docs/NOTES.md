@@ -712,6 +712,25 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
   EMUI 平台丢弃，如实记录。
 - 重装后例行恢复已做：1 万联系人重载(138s) + 乐库 7 首 mp3 重建播放列表（暂停态待命）。
 
+**追加：vphone 第五轮补：断开连接功能（保持配对，车机断连/回连测试场景）**
+
+- **实现** `/bt/disconnect?mac=X&force=0`（mac 空=自动选当前已连那台）+ GUI 蓝牙区
+  「⏹断开(保配对)」按钮 + CLI `disconnect [--mac] [--force]` + lib `bt_disconnect()`。
+  递降三层：①反射 `BluetoothDevice.disconnect()`；②A2DP/HFP 代理反射
+  `disconnect(device)`；③`setPriority(0)` 防车机秒回连；全拒且 force=1 → 兜底关蓝牙。
+  断开前自动暂停媒体（否则 A2DP 一断 MediaPlayer 改走手机扬声器外放）。
+- **EMUI 实测结论（华为 TEL-AN00a Android 10）**：②**可用** —— `A2dpService.disconnect` /
+  `HeadsetService.disconnect` 的代理反射返回 true（与 PBAP setPhonebookAccessPermission
+  被拦不同，这条 EMUI 放行了）；①设备级 disconnect 隐藏方法本机不存在(NoSuchMethod)；
+  ③setPriority 被 BLUETOOTH_PRIVILEGED 拦（与 PBAP 同类）。**且 ③被拦也不碍事：断开后
+  观察 30s 车机未自动回连**（车机回连退避长，断开态足够稳定撑完一轮测试）。
+- **真机全闭环验证**：断开 → CMD_PAUSE 自动停播 + BT_DISCONNECT/HFP断/A2DP断/ACL断
+  事件齐 + /bt/state 的 [已连] 标记消失（配对保留）→ 30s 无回连 → `/bt/reconnect`
+  （先补 setPrioBestEffort 恢复 priority）→ A2DP.connect/HFP.connect 反射均 true，
+  4s 内双 profile 回连 + 事件链完整。断连/回连两方向都成了可断言的结构化事件。
+- 重连代码补了一刀：reconnect 起手先 `setPrioBestEffort(d)` 恢复 priority=100
+  （防 disconnect 关过 priority 后系统拒绝回连）。
+
 
 
 1. **总时长始终 0**：`DisplayUpdater.Update()` 触发的 TRACK_CHANGED 里，车机采样的是**旧

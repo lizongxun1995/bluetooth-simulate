@@ -147,6 +147,7 @@ class App:
         ttk.Button(r4, text="配对选中", command=self._bond_sel).pack(side="left", padx=2)
         ttk.Button(r4, text="解配选中", command=self._unpair_sel).pack(side="left", padx=2)
         ttk.Button(r4, text="🔌重连(断线恢复)", command=self._reconnect_sel).pack(side="left", padx=2)
+        ttk.Button(r4, text="⏹断开(保配对)", command=self._disconnect_sel).pack(side="left", padx=2)
         ttk.Button(r4, text="📇授权车机拉通讯录", command=self._allow_car_sel).pack(side="left", padx=2)
         ttk.Button(r4, text="启用电话账号", command=lambda: self._run(self.vp.enable_account)).pack(side="right")
         r4b = ttk.Frame(f3); r4b.pack(fill="x", padx=4, pady=2)
@@ -487,6 +488,12 @@ class App:
         sel = self.lb_bt.curselection()
         target = self.bt_devs[sel[0]]["mac"] if sel else None
         self._run(lambda: self.vp.bt_reconnect(target))
+
+    def _disconnect_sel(self):
+        """断开选中设备(没选=当前已连接那台), 保持配对 —— 车机断连/回连测试用。"""
+        sel = self.lb_bt.curselection()
+        target = self.bt_devs[sel[0]]["mac"] if sel else None
+        self._run(lambda: self.vp.bt_disconnect(target))
 
     def _allow_car_sel(self):
         """授权选中设备(或第一台已连HFP设备)访问联系人/通话记录(PBAP)。"""

@@ -43,7 +43,7 @@ def main():
                                 "hangup|hold|dtmf|audio-bt|call-audio|track|play|pause|next|prev|"
                                 "jump|seek|silence|autoadvance|playlist|upload|files|del|play-audio|"
                                 "contacts-load|contacts-file|contacts-clear|contacts-count|"
-                                "bt-state|bt-name|scan|bond|unpair|bt-enable|reconnect|events|"
+                                "bt-state|bt-name|scan|bond|unpair|disconnect|bt-enable|reconnect|events|"
                                 "wait-event|install")
     ap.add_argument("rest", nargs="*", help="位置参数(如 upload/play-audio 的文件列表)")
     ap.add_argument("--num")
@@ -60,6 +60,7 @@ def main():
     ap.add_argument("--count", type=int, default=10000, help="contacts-load 联系人数量")
     ap.add_argument("--prefix", default="联系人", help="contacts-load 名字前缀")
     ap.add_argument("--loop", action="store_true", help="call-audio 循环播放")
+    ap.add_argument("--force", action="store_true", help="disconnect 反射全被拒时兜底关蓝牙")
     ap.add_argument("--detail", help="wait-event 事件 detail 子串过滤")
     ap.add_argument("--timeout", type=float, default=30, help="wait-event 超时秒")
     args = ap.parse_args()
@@ -195,6 +196,8 @@ def main():
             print(vp.bt_unpair(args.mac))
         elif c == "bt-enable":
             print(vp.bt_enable(args.on != "0"))
+        elif c == "disconnect":
+            print(vp.bt_disconnect(args.mac, force=args.force))
         elif c == "reconnect":
             print(vp.bt_reconnect(args.mac))
         elif c == "allow-car":

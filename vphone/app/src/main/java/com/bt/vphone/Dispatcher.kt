@@ -36,6 +36,7 @@ object Dispatcher {
         "scan_result" to "/bt/scan-result",
         "bond" to "/bt/bond",
         "unpair" to "/bt/unpair",
+        "disconnect" to "/bt/disconnect",
         "reconnect" to "/bt/reconnect",
         "allow_car" to "/bt/allow-car",
         "bt_name" to "/bt/name",
@@ -103,6 +104,9 @@ object Dispatcher {
                 "/bt/scan-result" -> BtEngine.scanResult()
                 "/bt/bond" -> BtEngine.bond(q["mac"] ?: q["name"] ?: "")
                 "/bt/unpair" -> BtEngine.unpair(q["mac"] ?: q["name"] ?: "")
+                "/bt/disconnect" -> BtEngine.disconnect(
+                    q["mac"] ?: q["name"] ?: "", (q["force"] ?: "0") == "1"
+                )
                 "/bt/reconnect" -> BtEngine.reconnect(
                     q["mac"] ?: q["name"] ?: "", (q["fallback"] ?: "1") != "0"
                 )
@@ -142,6 +146,6 @@ object Dispatcher {
             "adb : adb shell am broadcast -a com.bt.vphone.CMD --es cmd incoming --es number 13800138000\n" +
             "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing|audio  \n" +
             "     /media/track|play|pause|next|prev|jump|seek|silence|autoadvance|playlist|upload|files|del|diag  \n" +
-            "     /bt/state|scan|scan-result|bond|unpair|reconnect|name|enable  \n" +
+            "     /bt/state|scan|scan-result|bond|unpair|disconnect|reconnect|name|enable  \n" +
             "     /contacts/load|import|clear|count|status  /events?since=N(JSON,断言用)"
 }

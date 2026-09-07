@@ -238,6 +238,82 @@ object BtEngine {
     }
 
     /**
+     * 断开与设备的连接(保持配对) —— 车机断连/回连测试用。递降:
+     * ① 反射 BluetoothDevice.disconnect()(API 29+ 隐藏);
+     * ② A2DP/HFP 代理反射 disconnect();
+     * ③ setPriority(0) 关自动回连 —— 关键: 断开后车机会立刻主动回连,
+     *    不关 priority 几秒内就被弹回去; /bt/reconnect 会先恢复 100 再连;
+     * 全被系统权限拒且 force=1 → 兜底直接关蓝牙(恢复: /bt/enable?on=1 / /bt/reconnect)。
+     * 断开前自动暂停媒体(否则 A2DP 一断, MediaPlayer 改走手机扬声器外放)。
+     */
+    @SuppressLint("MissingPermission")
+    fun disconnect(target: String, force: Boolean): String {
+        val ad = adapter ?: return "无蓝牙适配器"
+        val bonded = try {
+            ad.bondedDevices
+        } catch (_: Throwable) {
+            emptySet<BluetoothDevice>()
+        }
+        val d = (if (target.isBlank())
+            bonded.firstOrNull { profileHas(a2dp, it) || profileHas(headset, it) }
+        else
+            bonded.firstOrNull {
+                it.address.equals(target, true) || sName(it).contains(target, true)
+            })
+            ?: return if (target.isBlank()) "当前无已连接设备(已配对的都处于断开态)"
+            else "未找到已配对设备: $target (/bt/state 查列表)"
+        val sb = StringBuilder("断开 ${sName(d)} ${d.address} (配对保留):\n")
+
+        try { MediaEngine.pause() } catch (_: Throwable) {}
+
+        var hit = 0
+        try {
+            val m: Method = d.javaClass.getMethod("disconnect")
+            val r = m.invoke(d) as? Boolean ?: false
+            if (r) hit++
+            sb.append("① device.disconnect → $r\n")
+        } catch (e: Throwable) {
+            sb.append("① device.disconnect 不可用(${cause(e)})\n")
+        }
+        for (p in listOf(a2dp to "A2DP", headset to "HFP")) {
+            val proxy = p.first ?: continue
+            try {
+                val m: Method = proxy.javaClass.getMethod("disconnect", BluetoothDevice::class.java)
+                val r = m.invoke(proxy, d) as? Boolean ?: false
+                if (r) hit++
+                sb.append("② ${p.second}.disconnect → $r\n")
+            } catch (e: Throwable) {
+                sb.append("② ${p.second}.disconnect 不可用(${cause(e)})\n")
+            }
+        }
+        var prioOff = false
+        try {
+            for (p in listOf(a2dp to "A2DP", headset to "HFP")) {
+                val proxy = p.first ?: continue
+                val m: Method = proxy.javaClass.getMethod(
+                    "setPriority", BluetoothDevice::class.java, Int::class.javaPrimitiveType
+                )
+                m.invoke(proxy, d, 0)
+            }
+            prioOff = true
+            sb.append("③ A2DP/HFP priority → 0(拒绝车机自动回连; 重连会先恢复100)\n")
+        } catch (e: Throwable) {
+            sb.append("③ setPriority 不可用(${cause(e)}) → 车机若几秒内自己回连属车机主动行为\n")
+        }
+
+        if (hit == 0 && force) {
+            sb.append("④ 兜底: 直接关蓝牙(恢复用 /bt/enable?on=1 或 /bt/reconnect)\n")
+            Thread { setEnabled(false) }.start()
+        }
+        EventLog.add(
+            EventLog.BT_DISCONNECT, "cmd",
+            "指令断开: ${sName(d)} ${d.address} (配对保留, priority=${if (prioOff) "已关" else "未关"})"
+        )
+        sb.append("→ 看事件流 ACL/A2DP/HFP 断开; /bt/state 确认 [已连] 标记消失")
+        return sb.toString().trim()
+    }
+
+    /**
      * 断线重连(手机侧主动发起)。三条路:
      * ① 反射 BluetoothDevice.connect()(API 29+ 隐藏, 部分 ROM 可用);
      * ② A2DP/HFP profile 代理反射 connect();
@@ -251,6 +327,9 @@ object BtEngine {
             it.address.equals(target, true) || sName(it).contains(target, true)
         } ?: return "未找到已配对设备: $target (/bt/state 查列表)"
         val sb = StringBuilder("重连 ${sName(d)} ${d.address}:\n")
+
+        // disconnect 会把 priority 关掉(防车机秒回连), 重连前先恢复 100
+        setPrioBestEffort(d)
 
         var devOk: Boolean? = null
         try {
