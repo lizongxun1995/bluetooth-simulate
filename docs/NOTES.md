@@ -730,6 +730,12 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
   4s 内双 profile 回连 + 事件链完整。断连/回连两方向都成了可断言的结构化事件。
 - 重连代码补了一刀：reconnect 起手先 `setPrioBestEffort(d)` 恢复 priority=100
   （防 disconnect 关过 priority 后系统拒绝回连）。
+- **重装清联系人行为不定（本轮新发现）**：上一轮重装实测清空 vphone 账号联系人，
+  本轮重装实测**没清**（旧 1 万还在，又叠一轮 → 1.33 万→清理重灌）。结论：装完
+  **先 `/contacts/count` 再决定是否重载**；重复重载会叠加重复联系人（同名两套），
+  要精确数量就 clear→load 一次到位。注意 **clear/load 都是异步批任务**：clear 发出后
+  立刻 load 会被拒（“批量任务进行中”），脚本要轮询 `/contacts/status` 到 idle 再发下一条
+  （本轮实测踩过：clear+3s 后 load 被拒 → vphone=0，补一轮 load 才到 1 万）。
 
 
 
