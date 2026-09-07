@@ -388,6 +388,24 @@ object BtEngine {
         return sb.toString().trimEnd()
     }
 
+    /** 修改本机蓝牙名(车机上显示的手机名); name 为空 = 查询当前名。 */
+    @SuppressLint("MissingPermission")
+    fun setName(name: String): String {
+        val ad = adapter ?: return "无蓝牙适配器"
+        val cur = sAdName(ad)
+        if (name.isBlank()) return "蓝牙名=$cur (改名: /bt/name?name=新名字)"
+        val n = name.trim()
+        return try {
+            ad.setName(n)
+            Thread.sleep(300)   // 等系统生效再回读
+            val now = sAdName(ad)
+            if (now == n) "蓝牙名已改: $cur → $now (车机重新连接后显示新名)"
+            else "回读仍是 \"$now\" (EMUI 可能拦截改名; 可试蓝牙开关循环后重查)"
+        } catch (t: Throwable) {
+            "改名失败: ${cause(t)}"
+        }
+    }
+
     private fun profileHas(p: BluetoothProfile?, d: BluetoothDevice): Boolean = try {
         p?.connectedDevices?.any { it.address.equals(d.address, true) } == true
     } catch (_: Throwable) {

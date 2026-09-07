@@ -129,8 +129,15 @@ object MediaEngine {
         return "已推送: ${trackDesc()}"
     }
 
-    /** 行格式: 标题|歌手|专辑|时长秒|乐库文件名 (后两列可选, 多行/;分隔, # 注释) */
+    /** 行格式: 标题|歌手|专辑|时长秒|乐库文件名 (后两列可选, 多行/;分隔, # 注释)。
+     *  text 为空 = 查询当前播放列表(同格式回读, 供控制端编辑后回写)。 */
     fun loadPlaylist(text: String): String {
+        if (text.isBlank()) {
+            if (playlist.isEmpty()) return "# 播放列表为空"
+            return playlist.joinToString("\n") {
+                "${it.title}|${it.artist}|${it.album}|${it.dur}|${it.path ?: ""}"
+            }
+        }
         val list = text.split('\n', ';').mapNotNull { raw ->
             val line = raw.trim()
             if (line.isEmpty() || line.startsWith("#")) return@mapNotNull null
@@ -198,13 +205,26 @@ object MediaEngine {
         if (playlist.isNotEmpty()) {
             plIndex = (plIndex + d + playlist.size) % playlist.size
             applyIndex()
+            // 播放中: 换文件开播; 暂停中: 释放旧播放器(恢复时从新歌0s起), 避免挂着旧文件
+            if (playing) ensureAudioOut() else stopReal()
         } else {
             posSec = 0
         }
-        if (playing) ensureAudioOut()
         pushMeta()
         pushState()
         return "切换 → ${trackDesc()}${realTag()}"
+    }
+
+    /** 跳到列表第 idx 首(0起)并按当前播放/暂停态就位 —— 播放列表管理"双击跳播"用 */
+    fun jump(idx: Int): String {
+        if (playlist.isEmpty()) return "播放列表为空(先在播放列表管理里添加)"
+        val i = ((idx % playlist.size) + playlist.size) % playlist.size
+        plIndex = i
+        applyIndex()
+        if (playing) ensureAudioOut()
+        pushMeta()
+        pushState()
+        return "跳转 → ${trackDesc()}${realTag()}"
     }
 
     fun setAutoAdvance(on: Boolean): String {
@@ -217,7 +237,9 @@ object MediaEngine {
         title = t.title
         artist = t.artist
         album = t.album
-        durationSec = t.dur
+        // 第4列给0(时长未知, 真实音频播起后取实际值)时沿用上次值, 不能清成0
+        // (旧版清0 → 车机在切歌瞬间/暂停切歌时显示 00:00 总时长)
+        durationSec = if (t.dur > 0) t.dur else maxOf(durationSec, 1)
         posSec = 0
     }
 
@@ -272,12 +294,17 @@ object MediaEngine {
             m.setDataSource(f.absolutePath)
             m.setOnCompletionListener {
                 EventLog.add(EventLog.MEDIA_TRACK_END, "app", "真实音频播完: ${f.name}")
-                if (autoAdvance && playlist.size > 1) {
-                    doAdvance(+1)
-                } else {
-                    playing = false
-                    posSec = durationSec
-                    pushState()
+                // post 到主线程再推进: 在 onCompletion 回调里直接 release 自己会死锁/抛错
+                // (旧版startReal→stopReal→release 就发生在回调内 → "放完不播下一曲"的根因)
+                main.post {
+                    if (autoAdvance && playlist.size > 1) {
+                        doAdvance(+1)
+                    } else {
+                        playing = false
+                        posSec = durationSec
+                        pushState()
+                        stopTicker()   // 单曲结束停心跳, 否则时间乱跳
+                    }
                 }
             }
             m.prepare()   // 本地文件同步 prepare, 快

@@ -9,6 +9,7 @@
 import argparse
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -80,10 +81,11 @@ class App:
         self.var_silence = tk.BooleanVar(value=True)
         ttk.Checkbutton(r2, text="静音流(保活A2DP)", variable=self.var_silence,
                         command=self._set_silence).pack(side="left", padx=10)
-        ttk.Button(r2, text="载入demo播放列表", command=self._load_playlist).pack(side="left", padx=2)
         r2b = ttk.Frame(f1); r2b.pack(fill="x", padx=4, pady=2)
         ttk.Button(r2b, text="⇧电脑选曲→上传→车机播放", command=self._pick_audio).pack(side="left")
-        ttk.Button(r2b, text="🎵乐库管理", command=self._music_lib).pack(side="left", padx=4)
+        ttk.Button(r2b, text="🎵播放列表管理", command=self._playlist_mgr).pack(side="left", padx=4)
+        self.lbl_media = ttk.Label(f1, text="当前: -(未播放)", foreground="#357")
+        self.lbl_media.pack(fill="x", padx=8, pady=(0, 3))
 
         # ---- 电话(门C) ----
         f2 = ttk.LabelFrame(left, text="电话 (门C: 虚拟来电/去电; 车机接听/挂断/拨出回流见事件流)")
@@ -104,14 +106,14 @@ class App:
                         command=self._set_auto_outgoing).pack(side="left", padx=10)
         r3b = ttk.Frame(f2); r3b.pack(fill="x", padx=4, pady=2)
         ttk.Label(r3b, text="通话音频(对端说话):").pack(side="left")
-        self.e_caudio = ttk.Entry(r3b, width=24)
-        self.e_caudio.pack(side="left", padx=4)
+        self.cb_caudio = ttk.Combobox(r3b, width=32, state="readonly")
+        self.cb_caudio.pack(side="left", padx=4)
+        ttk.Button(r3b, text="↻刷新", width=3, command=self._refresh_caudio).pack(side="left")
         self.var_caloop = tk.BooleanVar(value=False)
         ttk.Checkbutton(r3b, text="循环", variable=self.var_caloop).pack(side="left")
         ttk.Button(r3b, text="▶播放(需通话中)",
                    command=self._call_audio).pack(side="left", padx=4)
         ttk.Button(r3b, text="⏹停止", command=lambda: self._run(self.vp.call_audio_stop)).pack(side="left")
-        ttk.Button(r3b, text="乐库第一个", command=self._call_audio_first).pack(side="left", padx=4)
 
         # ---- 联系人 ----
         f2b = ttk.LabelFrame(left, text="联系人 (自定义/批量1w → 车机 PBAP 通讯录压测; 只写 vphone 账号)")
@@ -138,6 +140,12 @@ class App:
         ttk.Button(r4, text="🔌重连(断线恢复)", command=self._reconnect_sel).pack(side="left", padx=2)
         ttk.Button(r4, text="📇授权车机拉通讯录", command=self._allow_car_sel).pack(side="left", padx=2)
         ttk.Button(r4, text="启用电话账号", command=lambda: self._run(self.vp.enable_account)).pack(side="right")
+        r4b = ttk.Frame(f3); r4b.pack(fill="x", padx=4, pady=2)
+        ttk.Label(r4b, text="蓝牙名:").pack(side="left")
+        self.e_btname = ttk.Entry(r4b, width=20)
+        self.e_btname.pack(side="left", padx=4)
+        ttk.Button(r4b, text="✏改名", command=self._bt_rename).pack(side="left")
+        ttk.Label(r4b, text="(车机重连后显示新名)", foreground="#888").pack(side="left", padx=4)
         self.lb_bt = tk.Listbox(f3, height=5)
         self.lb_bt.pack(fill="both", expand=True, padx=4, pady=2)
 
@@ -186,10 +194,6 @@ class App:
             self.e_title.get(), self.e_artist.get(), self.e_album.get(),
             int(self.e_dur.get() or 240)))
 
-    def _load_playlist(self):
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo_pl.txt")
-        self._run(lambda: self.vp.playlist(file=path))
-
     def _incoming(self):
         self._run(lambda: self.vp.incoming(self.e_num.get()))
 
@@ -218,60 +222,215 @@ class App:
                 self.q.put(("log", f"[错误] {e}"))
         self.pool.submit(task)
 
-    def _music_lib(self):
-        """乐库管理小窗: 列表 + 播放选中/删除/刷新。"""
+    def _playlist_mgr(self):
+        """播放列表管理: 当前列表(上移/下移/移除/双击跳播) + 乐库(加入/删除/上传)。
+        修改后「✅应用」整表回写, 并保持当前播放曲目不跳变。"""
         tk, ttk = self.tk, self.ttk
         if self.vp is None:
             self.log("!! 未连接")
             return
         win = tk.Toplevel(self.root)
-        win.title("手机乐库 (/media/files)")
-        win.geometry("420x360")
-        lb = tk.Listbox(win, height=12)
-        lb.pack(fill="both", expand=True, padx=6, pady=4)
+        win.title("播放列表管理")
+        win.geometry("680x600")
+        pl_items: list[dict] = []
+
+        ttk.Label(win, text="当前播放列表 (双击 = 跳到这首并播放; ▶ = 正在播):").pack(
+            anchor="w", padx=10, pady=(8, 0))
+        pl = tk.Listbox(win, height=8)
+        pl.pack(fill="both", expand=True, padx=10, pady=2)
+
+        def cur_idx():
+            try:
+                m = re.search(r"idx=(\d+)", self.vp.http("/media/status"))
+                return int(m.group(1)) if m else 0
+            except Exception:
+                return 0
+
+        def render(cur=-1):
+            pl.delete(0, "end")
+            for i, it in enumerate(pl_items):
+                mark = "▶ " if i == cur else "   "
+                f = f"  📄{it.get('path')}" if it.get("path") else ""
+                pl.insert("end", f"{mark}{i + 1}. {it['title']} | {it['artist']}{f}")
 
         def refresh():
-            lb.delete(0, "end")
-            try:
-                for f in self.vp.list_audio():
-                    lb.insert("end", f'{f["name"]}  ({f["kb"]}KB)')
-            except Exception as e:
-                lb.insert("end", f"!! {e}")
+            def task():
+                try:
+                    items = self.vp.playlist_get()
+                    cur = cur_idx()
 
-        def sel_name():
-            s = lb.curselection()
-            if not s:
-                return None
-            return lb.get(s[0]).split("(")[0].strip()
+                    def apply():
+                        pl_items[:] = items
+                        render(cur)
+                    self.q.put(("call", apply))
+                except Exception as e:
+                    self.q.put(("call", lambda: pl.insert("end", f"!! {e}")))
+            self.pool.submit(task)
+
+        def push():
+            """整表回写手机, 并跳回当前曲目(回写会重置到第1首)。"""
+            lines = ["{}|{}|{}|{}|{}".format(
+                it["title"], it["artist"], it["album"], it["dur"], it.get("path") or "")
+                for it in pl_items]
+            keep = min(cur_idx(), max(len(pl_items) - 1, 0))
+
+            def task():
+                try:
+                    self.q.put(("log", self.vp.playlist(text="\n".join(lines))))
+                    if pl_items:
+                        self.q.put(("log", self.vp.media_jump(keep)))
+                    self.q.put(("call", refresh))
+                except Exception as e:
+                    self.q.put(("log", f"[错误] {e}"))
+            self.pool.submit(task)
+
+        def sel():
+            s = pl.curselection()
+            return s[0] if s else None
+
+        def move(d):
+            i = sel()
+            if i is None:
+                return
+            j = i + d
+            if 0 <= j < len(pl_items):
+                pl_items[i], pl_items[j] = pl_items[j], pl_items[i]
+                render()
+                pl.selection_set(j)
+
+        def remove():
+            i = sel()
+            if i is not None:
+                del pl_items[i]
+                render()
 
         bar = ttk.Frame(win)
-        bar.pack(fill="x", padx=6, pady=2)
-        ttk.Button(bar, text="▶播放选中", command=lambda: self._run(
-            lambda: self.vp.playlist_audio([sel_name()])) if sel_name() else None).pack(side="left")
-        ttk.Button(bar, text="🗑删除选中", command=lambda: (
-            self._run(lambda: self.vp.del_audio(sel_name())), refresh()) if sel_name() else None).pack(side="left", padx=4)
-        ttk.Button(bar, text="↻刷新", command=refresh).pack(side="left")
+        bar.pack(fill="x", padx=10, pady=2)
+        ttk.Button(bar, text="⬆上移", command=lambda: move(-1)).pack(side="left")
+        ttk.Button(bar, text="⬇下移", command=lambda: move(1)).pack(side="left")
+        ttk.Button(bar, text="➖移除", command=remove).pack(side="left", padx=4)
+        ttk.Button(bar, text="✅应用修改", command=push).pack(side="left", padx=4)
+        ttk.Button(bar, text="↻重查手机", command=refresh).pack(side="right")
+
+        def on_dbl(_ev):
+            i = sel()
+            if i is not None:
+                self._run(lambda: "\n".join([self.vp.media_jump(i), self.vp.play()]))
+        pl.bind("<Double-Button-1>", on_dbl)
+
+        ttk.Label(win, text="乐库 (上传过的音频文件; 选中→加入播放列表):").pack(
+            anchor="w", padx=10, pady=(6, 0))
+        lib = tk.Listbox(win, height=6)
+        lib.pack(fill="both", expand=True, padx=10, pady=2)
+
+        def refresh_lib():
+            def task():
+                try:
+                    files = [f"{f['name']}  ({f['kb']}KB)" for f in self.vp.list_audio()]
+                    self.q.put(("call", lambda: (lib.delete(0, "end"),
+                                                 [lib.insert("end", x) for x in files])))
+                except Exception as e:
+                    self.q.put(("call", lambda: lib.insert("end", f"!! {e}")))
+            self.pool.submit(task)
+
+        def lib_sel():
+            s = lib.curselection()
+            return lib.get(s[0]).split("(")[0].strip() if s else None
+
+        def add_sel():
+            n = lib_sel()
+            if not n:
+                return
+            pl_items.append({"title": os.path.splitext(n)[0], "artist": "",
+                             "album": "vphone乐库", "dur": 0, "path": n})
+            push()          # 加入即应用, 并保持当前曲目
+
+        def del_sel():
+            n = lib_sel()
+            if n:
+                self._run(lambda: self.vp.del_audio(n))
+                self.q.put(("call", refresh_lib))
+
+        def upload():
+            from tkinter import filedialog
+            paths = filedialog.askopenfilenames(
+                title="选择音频文件(可多选)",
+                filetypes=[("音频", " ".join(AUDIO_EXTS)), ("所有文件", "*.*")])
+            if not paths:
+                return
+
+            def task():
+                try:
+                    for p in paths:
+                        self.q.put(("log", self.vp.upload_audio(p)))
+                        pl_items.append({"title": os.path.splitext(os.path.basename(p))[0],
+                                         "artist": "", "album": "vphone乐库", "dur": 0,
+                                         "path": os.path.basename(p)})
+                    self.q.put(("call", refresh_lib))
+                    push()
+                except Exception as e:
+                    self.q.put(("log", f"[错误] {e}"))
+            self.pool.submit(task)
+
+        bar2 = ttk.Frame(win)
+        bar2.pack(fill="x", padx=10, pady=(2, 8))
+        ttk.Button(bar2, text="＋加入列表", command=add_sel).pack(side="left")
+        ttk.Button(bar2, text="🗑删除文件", command=del_sel).pack(side="left", padx=4)
+        ttk.Button(bar2, text="⇧上传电脑音频并加入", command=upload).pack(side="left", padx=4)
+        ttk.Button(bar2, text="↻刷新", command=refresh_lib).pack(side="right")
+
         refresh()
+        refresh_lib()
 
     def _call_audio(self):
-        name = self.e_caudio.get().strip()
+        name = self.cb_caudio.get().strip()
         if not name:
-            self.log("!! 先填乐库文件名(或点「乐库第一个」)")
+            self.log("!! 先在下拉框选一个音频(空则点「↻刷新」)")
             return
         self._run(lambda: self.vp.call_audio(name, loop=self.var_caloop.get()))
 
-    def _call_audio_first(self):
+    def _refresh_caudio(self):
+        """刷新通话音频下拉框(取手机乐库文件名)。"""
         def task():
             try:
-                fs = self.vp.list_audio()
-                if not fs:
-                    self.q.put(("log", "乐库为空, 先「⇧电脑选曲」上传"))
-                    return
-                self.q.put(("log", f"通话音频 → {fs[0]['name']}"))
-                self.q.put(("log", self.vp.call_audio(fs[0]["name"], loop=self.var_caloop.get())))
+                names = [f["name"] for f in self.vp.list_audio()]
+                def apply():
+                    self.cb_caudio.configure(values=names)
+                    if names and self.cb_caudio.get() not in names:
+                        self.cb_caudio.set(names[0])
+                self.q.put(("call", apply))
+                if not names:
+                    self.q.put(("log", "乐库为空: 先「⇧电脑选曲」或播放列表管理里上传"))
             except Exception as e:
                 self.q.put(("log", f"[错误] {e}"))
         self.pool.submit(task)
+
+    def _bt_rename(self):
+        n = self.e_btname.get().strip()
+        if not n:
+            self.log("!! 先填新蓝牙名")
+            return
+        self._run(lambda: self.vp.bt_name(n))
+
+    def _stat_poll(self):
+        """后台线程: 1s 刷新"当前曲目/时间"行 —— 车机切歌后 GUI 立即跟上。"""
+        while not self._evt_stop.is_set():
+            try:
+                s = self.vp.http("/media/status")
+                m = re.search(
+                    r'media=(\w+) track="([^"]*)"/(\S*) pos=(\d+)s dur=(\d+)s '
+                    r'playlist=(\d+)首 idx=(\d+)', s)
+                if m:
+                    st, title, artist, pos, dur, n, idx = m.groups()
+                    mark = "▶" if st == "playing" else "⏸"
+                    txt = f"当前: {mark} 「{title}」/{artist}  {pos}s/{dur}s  第{int(idx) + 1}/{n}首"
+                    real = re.search(r"real=(\S+)", s)
+                    if real and real.group(1) != "none":
+                        txt += f"  📄{real.group(1)}"
+                    self.q.put(("media", txt))
+            except Exception:
+                pass
+            self._evt_stop.wait(1.0)
 
     def _contacts_load(self):
         try:
@@ -400,7 +559,9 @@ class App:
                     self._run(self.vp.enable_autoconfirm)
                     self._run(self.vp.set_auto_outgoing(True))
                     self._contacts_refresh()
+                    self._refresh_caudio()
                     threading.Thread(target=self._evt_poll, daemon=True).start()
+                    threading.Thread(target=self._stat_poll, daemon=True).start()
                 elif kind == "connfail":
                     self.lbl_conn.config(text="连接失败", foreground="#c22")
                     self.log("!! 连接失败: " + payload)
@@ -411,6 +572,10 @@ class App:
                         self.lb_bt.insert("end", f"{d['name']}  {d['mac']}  {d['rssi']}dBm")
                 elif kind == "contacts":
                     self.lbl_contacts.config(text=f"计数: {payload}")
+                elif kind == "media":
+                    self.lbl_media.config(text=payload)
+                elif kind == "call":
+                    payload()
         except queue.Empty:
             pass
         self.root.after(100, self._drain)

@@ -661,6 +661,26 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
 - **卸载重装会清空 vphone 联系人**：联系人挂在 vphone 账号(account_type=com.bt.vphone)
   下，重装 APK 触发系统清理（实测 vphone=0 total=回原生量）→ 每次重装后需重新
   `contacts-load`。
+
+**追加：vphone 第四轮（播放列表管理/播放器状态机/通话音频下拉/蓝牙改名）**
+
+- **"放完不播下一曲"根因**：onCompletion 回调里直接 doAdvance → startReal → stopReal →
+  **在自己 onCompletion 里 release 自己**（回调由主线程派发，release 嵌套在回调内
+  死锁/抛错被吞）→ 修法：`main.post {}` 把推进动作挪到回调返回之后。另单曲结束补
+  `stopTicker()`（旧版心跳不停 → 时间乱跳）。
+- **切歌瞬间总时长 00:00**：applyIndex 旧版 `durationSec = t.dur`，第4列给 0(未知)时
+  直接清零 → 车机显示 0 时长 → 修法：dur>0 才覆盖，否则沿用上次值（真实音频播起后
+  getDuration 再校准）。
+- **暂停态切歌残留旧播放器**：doAdvance 旧版只在 playing 时处理音频，暂停切歌挂着旧
+  MediaPlayer → 恢复播放才切 → 现暂停切歌即 stopReal 释放，恢复从新歌 0s 起。
+- **播放列表可回读**：`/media/playlist` 不带 text = 查询当前列表（同"标题|歌手|专辑|秒|
+  文件"格式回读）→ 控制端可编辑后整表回写；`/media/jump?idx=N` 跳到第 N 首按当前
+  播放/暂停态就位。GUI"乐库管理"升级为**播放列表管理**：上移/下移/移除/双击跳播/
+  乐库加入/上传并入列表，整表回写后自动跳回原曲目不跳变；demo 播放列表按钮已删。
+- **通话音频改下拉选择**（乐库文件 Combobox，去掉手填名 + "乐库第一个"按钮）；
+  **蓝牙改名** `/bt/name?name=X`（BluetoothAdapter.setName，EMUI 回读校验，车机重连
+  后显示新名），GUI 蓝牙区有输入框。GUI 媒体区新增 1s 刷新的"当前曲目/时间"行
+  （车机切歌后电脑端立即跟上）。
 - **歌词定论（重申）**：标准蓝牙通道不存在歌词传输——AVRCP 1.3-1.6 正在播放元数据只有
   标题/歌手/专辑/时长/曲目号，无歌词字段；A2DP 只传压缩音频码流；Android MediaSession
   也无 LYRICS key 可推。车机显示歌词只有两条真路：车机自己联网按歌名匹配歌词（需车机

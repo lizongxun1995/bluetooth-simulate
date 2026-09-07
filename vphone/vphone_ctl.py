@@ -41,10 +41,10 @@ def main():
     ap.add_argument("--port", type=int, default=18800, help="PC 侧本地端口(默认 18800)")
     ap.add_argument("cmd", help="start|grant-perms|enable-account|status|incoming|dial|answer|"
                                 "hangup|hold|dtmf|audio-bt|call-audio|track|play|pause|next|prev|"
-                                "silence|autoadvance|playlist|upload|files|del|play-audio|"
+                                "jump|silence|autoadvance|playlist|upload|files|del|play-audio|"
                                 "contacts-load|contacts-file|contacts-clear|contacts-count|"
-                                "bt-state|scan|bond|unpair|bt-enable|reconnect|events|wait-event|"
-                                "install")
+                                "bt-state|bt-name|scan|bond|unpair|bt-enable|reconnect|events|"
+                                "wait-event|install")
     ap.add_argument("rest", nargs="*", help="位置参数(如 upload/play-audio 的文件列表)")
     ap.add_argument("--num")
     ap.add_argument("--mac", help="bond/unpair 目标: MAC 或名字片段")
@@ -140,7 +140,13 @@ def main():
         elif c == "autoadvance":
             print(vp.autoadvance(args.on != "0"))
         elif c == "playlist":
-            print(vp.playlist(text=args.text, file=args.file))
+            print(vp.playlist(text=args.text, file=args.file))   # 无参=查询当前列表
+        elif c == "jump":
+            if not args.rest:
+                sys.exit("!! 用法: jump <序号从0起>")
+            print(vp.media_jump(int(args.rest[0])))
+        elif c == "bt-name":
+            print(vp.bt_name(args.name) if args.name else vp.bt_name())
         elif c == "upload":
             if not args.rest and not args.file:
                 sys.exit("!! upload 需要文件路径(位置参数或 --file)")

@@ -325,11 +325,33 @@ class VPhone:
         return self.cmd("track", title=title, artist=artist, album=album, duration=dur)
 
     def playlist(self, text=None, file=None) -> str:
-        """播放列表: text 多行/分号分隔 '标题|歌手|专辑|秒'; file 读文件。"""
+        """播放列表: text 多行/分号分隔 '标题|歌手|专辑|秒'; file 读文件。
+        都不给 = 查询当前播放列表(同格式回读)。"""
         if file:
             with open(file, "r", encoding="utf-8") as f:
                 text = f.read().replace("\r", "").replace("\n", ";")
         return self.cmd("playlist", text=text or "")
+
+    def playlist_get(self) -> list:
+        """当前播放列表: [{'title','artist','album','dur','path'}, ...]。"""
+        out = self.cmd("playlist")
+        items = []
+        for line in out.splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            p = line.split("|")
+            items.append({
+                "title": p[0] if len(p) > 0 else "",
+                "artist": p[1] if len(p) > 1 else "",
+                "album": p[2] if len(p) > 2 else "",
+                "dur": int(p[3]) if len(p) > 3 and p[3].isdigit() else 0,
+                "path": (p[4].strip() if len(p) > 4 else "") or None,
+            })
+        return items
+
+    def media_jump(self, idx) -> str:
+        """跳到播放列表第 idx 首(0 起)并按当前播放/暂停态就位。"""
+        return self.cmd("jump", idx=int(idx))
 
     def play(self) -> str:
         return self.cmd("play")
@@ -439,6 +461,10 @@ class VPhone:
             if not target:
                 return "(无已配对设备, 先 bt_bond)"
         return self.cmd("reconnect", mac=target, fallback="1" if fallback else "0")
+
+    def bt_name(self, name=None) -> str:
+        """查看/修改本机蓝牙名(车机上显示的手机名)。name=None 只查询。"""
+        return self.cmd("bt_name", name=name) if name else self.cmd("bt_name")
 
     def bt_allow_car(self, target=None) -> str:
         """授权车机访问联系人/通话记录(PBAP/MAP) —— 车机能拉通讯录的前提。

@@ -26,6 +26,7 @@ object Dispatcher {
         "silence" to "/media/silence",
         "autoadvance" to "/media/autoadvance",
         "playlist" to "/media/playlist",
+        "jump" to "/media/jump",
         "files" to "/media/files",
         "diag" to "/media/diag",
         "del" to "/media/del",
@@ -36,6 +37,7 @@ object Dispatcher {
         "unpair" to "/bt/unpair",
         "reconnect" to "/bt/reconnect",
         "allow_car" to "/bt/allow-car",
+        "bt_name" to "/bt/name",
         "bt_enable" to "/bt/enable",
         "contacts_load" to "/contacts/load",
         "contacts_import" to "/contacts/import",
@@ -87,6 +89,7 @@ object Dispatcher {
                     MediaEngine.setAutoAdvance((q["on"] ?: "1") != "0")
                 }
                 "/media/playlist" -> MediaEngine.loadPlaylist(q["text"] ?: "")
+                "/media/jump" -> MediaEngine.jump(q["idx"]?.toIntOrNull() ?: 0)
                 "/media/upload" -> MediaEngine.saveUpload(
                     q["name"] ?: "", body ?: ByteArray(0)
                 )
@@ -102,6 +105,7 @@ object Dispatcher {
                     q["mac"] ?: q["name"] ?: "", (q["fallback"] ?: "1") != "0"
                 )
                 "/bt/allow-car" -> BtEngine.allowCarAccess(q["mac"] ?: q["name"] ?: "")
+                "/bt/name" -> BtEngine.setName(q["name"] ?: "")
                 "/bt/enable" -> BtEngine.setEnabled((q["on"] ?: "1") != "0")
 
                 "/contacts/load" -> ContactsEngine.load(
@@ -135,7 +139,7 @@ object Dispatcher {
             "     (PC 亦可 adb forward tcp:18800 tcp:8800 后用 127.0.0.1:18800)\n" +
             "adb : adb shell am broadcast -a com.bt.vphone.CMD --es cmd incoming --es number 13800138000\n" +
             "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing|audio  \n" +
-            "     /media/track|play|pause|next|prev|silence|autoadvance|playlist|upload|files|del|diag  \n" +
-            "     /bt/state|scan|scan-result|bond|unpair|reconnect|enable  \n" +
+            "     /media/track|play|pause|next|prev|jump|silence|autoadvance|playlist|upload|files|del|diag  \n" +
+            "     /bt/state|scan|scan-result|bond|unpair|reconnect|name|enable  \n" +
             "     /contacts/load|import|clear|count|status  /events?since=N(JSON,断言用)"
 }
