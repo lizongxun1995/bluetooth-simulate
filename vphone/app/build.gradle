@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.bt.vphone'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.bt.vphone"
+        minSdk 21          // Android 5.0+ 通用装机
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+// 零第三方依赖: Telecom/MediaSession/NanoHTTPD 全部用系统 API + 手写 HTTP, 任意手机可装
+dependencies {
+}

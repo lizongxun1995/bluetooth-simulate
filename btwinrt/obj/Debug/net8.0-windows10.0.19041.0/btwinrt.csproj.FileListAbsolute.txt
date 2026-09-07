@@ -1,0 +1,12 @@
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\btwinrt.csproj.AssemblyReference.cache
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\btwinrt.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\btwinrt.AssemblyInfoInputs.cache
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\btwinrt.AssemblyInfo.cs
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\btwinrt.csproj.CoreCompileInputs.cache
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\bin\Debug\net8.0-windows10.0.19041.0\btwinrt.deps.json
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\bin\Debug\net8.0-windows10.0.19041.0\btwinrt.dll
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\bin\Debug\net8.0-windows10.0.19041.0\btwinrt.pdb
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\btwinrt.dll
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\refint\btwinrt.dll
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\btwinrt.pdb
+C:\Users\you\Documents\AutoTestFramework\bluetooth-simulate\btwinrt\obj\Debug\net8.0-windows10.0.19041.0\ref\btwinrt.dll

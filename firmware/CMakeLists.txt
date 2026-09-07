@@ -1,0 +1,5 @@
+# btphone 固件(ESP-IDF v5.x,目标芯片:原版 ESP32 / ESP32-D0WDQ6 / ESP32-WROOM-32)
+# 注意:不支持 ESP32-S3/C3/C6/H2(无经典蓝牙)
+cmake_minimum_required(VERSION 3.16)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(btphone)

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "btphone"
+version = "0.1.0"
+description = "蓝牙车机模拟测试工具:用 ESP32 充当脚本全控的虚拟手机(A2DP/AVRCP/HFP),Python 库 + CLI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "AutoTest Team" }]
+dependencies = [
+    "pyserial>=3.5",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# 音频转码依赖:歌曲为 mp3/flac/m4a 等格式时需要系统安装 ffmpeg
+audio = ["pydub>=0.25"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+btphone-cli = "btphone.cli:main"
+btphone-gui = "btphone.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["btphone*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

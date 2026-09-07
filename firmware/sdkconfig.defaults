@@ -1,0 +1,46 @@
+# btphone sdkconfig 默认值(在 idf.py set-target esp32 后自动应用)
+# 目标:原版 ESP32(经典蓝牙 + BLE 双模)
+
+# 自定义分区表
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# 经典蓝牙协议栈(选项名以 IDF v5.3 为准)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CLASSIC_ENABLED=y
+CONFIG_BTDM_CTRL_MODE_BTDM=y
+CONFIG_BTDM_CONTROLLER_MODE_BTDM=y
+CONFIG_BT_A2DP_ENABLE=y
+CONFIG_BT_SPP_ENABLED=y
+# HFP:AG(Audio Gateway,模拟手机)+ HCI 音频路径(数据经回调)
+CONFIG_BT_HFP_ENABLE=y
+CONFIG_BT_HFP_AG_ENABLE=y
+CONFIG_BT_HFP_CLIENT_ENABLE=y
+# WBS(宽带语音/mSBC)关闭:部分车机协商到 mSBC 后掉 HFP(社区常见兼容性问题,
+# esp-idf#14700 等);测试工具以最大兼容性优先,只提供 CVSD 窄带语音。
+# CONFIG_BT_HFP_WBS_ENABLE is not set
+CONFIG_BT_HFP_AUDIO_DATA_PATH_HCI=y
+
+# 协议占满串口(与 PC 的 JSON/音频协议共用 Type-C),关闭运行日志输出
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# 体积优先(降低 IRAM/Flash 占用)
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_FREERTOS_HZ=1000
+
+# 串口协议使用的 UART 波特率(与 PC 端 baudrate 一致)
+CONFIG_BTPHONE_UART_BAUD=2000000
+
+# WiFi 缓冲缩减(测试工具,低吞吐即可,给蓝牙+音频腾内存)
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_TX_BUFFER_SEQUENCE=0
+
+# 板卡 USB 供电弱,经典蓝牙/WiFi 射频上电冲击会触发 brownout 复位循环
+# (换粗短 USB 线/后置口/带供电 hub 是根治;此处先软件兜底)
+# CONFIG_ESP_BROWNOUT_DET is not set
+# panic 打印必须在复位前冲出 UART(0s 会连 FIFO 一起被复位丢掉,
+# 2026-09-01 实测 panic 零文本,取证拿不到 backtrace)
+CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=2

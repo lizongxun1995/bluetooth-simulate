@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- API 34+ 前台服务类型权限(旧系统自动忽略) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <application
+        android:label="VPhone 虚拟手机"
+        android:icon="@drawable/ic_vphone"
+        android:allowBackup="false"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 前台服务: 承载 HTTP 控制面 + MediaSession 播放器, 常驻不被杀 -->
+        <service
+            android:name=".VPhoneService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- 门C 核心: managed ConnectionService(电话账号), 呼叫在蓝牙设备(车机)上可见可控 -->
+        <service
+            android:name=".VPhoneConnectionService"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
+        <!-- adb 控制面: am broadcast -a com.bt.vphone.CMD, extras: cmd=incoming number=13800138000 -->
+        <receiver android:name=".ControlReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="com.bt.vphone.CMD" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
