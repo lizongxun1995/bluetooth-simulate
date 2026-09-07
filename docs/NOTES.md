@@ -633,6 +633,34 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
 ③ 人工一次：设置→蓝牙→设备→「共享联系人/访问通讯录」开关。
 授权后车机要**重新触发 PBAP**（车机通讯录刷新/蓝牙重连）才会拉到新数据。
 
+**追加：vphone 第三轮（暂停不掉/杂音滋滋/歌词定论）**
+
+- **"暂停了但车机没停"根因**：假元数据模式下出声靠静音流(A2DP 保活)，旧版 `doPause()`
+  只暂停 MediaPlayer 与进度心跳，**静音 AudioTrack 没停** → A2DP 流持续、车机侧一直
+  "播放中"（事件流实证：用户连按 4 次 CAR_PAUSE #12-15，手机状态确实 paused，但流没断）。
+  修复：doPause 同步 `audioTrack?.pause()`；恢复路径 `resumeOrStartSilence()`（旧版
+  startSilence 见 track 已存在直接 return，暂停过的流永远恢复不了，一并修）。
+- **事件标签更正**：MediaSession.Callback 无法区分按键来源（车机 AVRCP 与手机通知栏/
+  耳机线控走同一回调），detail 从"车机按键【X】"改为"媒体按键【X】(车机或手机通知栏)"，
+  断言仍用 type（CAR_PAUSE 等不变）。
+- **真实音频"滋滋"杂音取证**：logcat `AudioTrackShared: tallyUnderrunFrames(880)...
+  bump mUnderrunCount=8`（1.2s 音频 8 次欠载）= 爆音来源，密了听感即"断断续续"。
+  A2DP 本身协商正常（SBC 44.1k/16bit/立体声，mIsPlaying=true）。同时抓到
+  `com.android.server.telecom` 反复抢瞬时音频焦点 + A2dpStateMachine STARTED→STOPPED
+  循环（通话活动期间属正常：SCO 起 A2DP 停是车机蓝牙标准行为）。欠载爆音两类根因：
+  ①台架射频干扰（手机贴着 hub/主机线缆，2.4GHz 重传）②管线缓冲。对照实验定位：
+  a) 手机自带音乐 App 连车机放同一首 b) 播放中把手机拿离电脑 1m/拔 USB。若自带播放器
+  也滋滋 → 环境问题（换位置/加长 USB 延长线）；若只有 vphone 滋滋 → 备选方案改
+  MediaCodec+AudioTrack 自管大缓冲（4-8s）替换 MediaPlayer。
+- **防御性修复（无论根因都保留）**：`forceMediaRoute()` 播真实音频前释放挂起的 SCO
+  （通话中除外，那时 SCO 属于通话）；`pinPlayerA2dp` 绑定失败后台重试 10×500ms（A2DP
+  设备可能晚于播放就绪）；`/media/diag` 一条命令看实际输出设备/SCO 占用/绑定状态。
+- **歌词定论（重申）**：标准蓝牙通道不存在歌词传输——AVRCP 1.3-1.6 正在播放元数据只有
+  标题/歌手/专辑/时长/曲目号，无歌词字段；A2DP 只传压缩音频码流；Android MediaSession
+  也无 LYRICS key 可推。车机显示歌词只有两条真路：车机自己联网按歌名匹配歌词（需车机
+  在线+曲名精确），或 HiCar/CarLife 私有通道。用真歌名（青花瓷/周杰伦）实测本车机不拉
+  网络歌词 → 该车机 BT 音源无歌词功能，此路不通，已定案。
+
 
 
 1. **总时长始终 0**：`DisplayUpdater.Update()` 触发的 TRACK_CHANGED 里，车机采样的是**旧

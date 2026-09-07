@@ -27,6 +27,7 @@ object Dispatcher {
         "autoadvance" to "/media/autoadvance",
         "playlist" to "/media/playlist",
         "files" to "/media/files",
+        "diag" to "/media/diag",
         "del" to "/media/del",
         "bt_state" to "/bt/state",
         "scan" to "/bt/scan",
@@ -80,6 +81,7 @@ object Dispatcher {
                 "/media/next" -> MediaEngine.next()
                 "/media/prev" -> MediaEngine.prev()
                 "/media/status" -> MediaEngine.status()
+                "/media/diag" -> MediaEngine.diag()
                 "/media/silence" -> MediaEngine.setSilence((q["on"] ?: "1") != "0")
                 "/media/autoadvance" -> {
                     MediaEngine.setAutoAdvance((q["on"] ?: "1") != "0")
@@ -133,7 +135,7 @@ object Dispatcher {
             "     (PC 亦可 adb forward tcp:18800 tcp:8800 后用 127.0.0.1:18800)\n" +
             "adb : adb shell am broadcast -a com.bt.vphone.CMD --es cmd incoming --es number 13800138000\n" +
             "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing|audio  \n" +
-            "     /media/track|play|pause|next|prev|silence|autoadvance|playlist|upload|files|del  \n" +
+            "     /media/track|play|pause|next|prev|silence|autoadvance|playlist|upload|files|del|diag  \n" +
             "     /bt/state|scan|scan-result|bond|unpair|reconnect|enable  \n" +
             "     /contacts/load|import|clear|count|status  /events?since=N(JSON,断言用)"
 }

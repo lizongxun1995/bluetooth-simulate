@@ -374,6 +374,10 @@ class VPhone:
     def del_audio(self, name) -> str:
         return self.cmd("del", name=name)
 
+    def media_diag(self) -> str:
+        """音质/断续排查: 实际输出设备(A2DP/SCO)+绑定情况+SCO占用一目了然。"""
+        return self.cmd("diag")
+
     def playlist_audio(self, names, meta=None, autoplay=True) -> str:
         """用乐库文件名构造真实音频播放列表并(可选)播放。
         names: 乐库文件名列表; meta: 可选 [(标题,歌手,专辑), ...] 与 names 对齐, 缺省用文件名。"""

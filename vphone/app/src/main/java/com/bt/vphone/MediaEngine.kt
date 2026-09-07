@@ -78,27 +78,27 @@ object MediaEngine {
         session = MediaSession(app, "VPhoneMedia").apply {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
-                    EventLog.add(EventLog.CAR_PLAY, "car", "车机按键【播放】")
+                    EventLog.add(EventLog.CAR_PLAY, "car", "媒体按键【播放】(车机或手机通知栏)")
                     doPlay()
                 }
 
                 override fun onPause() {
-                    EventLog.add(EventLog.CAR_PAUSE, "car", "车机按键【暂停】")
+                    EventLog.add(EventLog.CAR_PAUSE, "car", "媒体按键【暂停】(车机或手机通知栏)")
                     doPause()
                 }
 
                 override fun onSkipToNext() {
-                    EventLog.add(EventLog.CAR_NEXT, "car", "车机按键【下一曲】")
+                    EventLog.add(EventLog.CAR_NEXT, "car", "媒体按键【下一曲】(车机或手机通知栏)")
                     doAdvance(+1)
                 }
 
                 override fun onSkipToPrevious() {
-                    EventLog.add(EventLog.CAR_PREV, "car", "车机按键【上一曲】")
+                    EventLog.add(EventLog.CAR_PREV, "car", "媒体按键【上一曲】(车机或手机通知栏)")
                     doAdvance(-1)
                 }
 
                 override fun onStop() {
-                    EventLog.add(EventLog.CAR_STOP, "car", "车机按键【停止】")
+                    EventLog.add(EventLog.CAR_STOP, "car", "媒体按键【停止】(车机或手机通知栏)")
                     doPause()
                 }
 
@@ -106,7 +106,7 @@ object MediaEngine {
                     posSec = (pos / 1000).toInt()
                     mp?.let { try { it.seekTo(posSec * 1000) } catch (_: Exception) {} }
                     pushState()
-                    EventLog.add(EventLog.CAR_SEEK, "car", "车机按键【拖进度】→ ${posSec}s")
+                    EventLog.add(EventLog.CAR_SEEK, "car", "媒体按键【拖进度】(车机或手机通知栏)→${posSec}s")
                 }
             }, main)
             isActive = true
@@ -179,6 +179,8 @@ object MediaEngine {
         pushState()
         stopTicker()
         try { mp?.pause() } catch (_: Exception) {}
+        // 静音流也必须停: 否则 A2DP 流继续, 车机侧看播放状态永远是"播放中"(暂停不掉)
+        try { audioTrack?.pause() } catch (_: Exception) {}
         return "已暂停: ${trackDesc()}${realTag()}"
     }
 
@@ -241,12 +243,24 @@ object MediaEngine {
             else try { mp?.start() } catch (_: Exception) { startReal(f) }
         } else {
             stopReal()
-            if (silenceWanted) startSilence()
+            if (silenceWanted) resumeOrStartSilence()
         }
+    }
+
+    /** 静音流: 已存在(可能是暂停态)则 resume, 否则新建 —— startSilence 遇已存在会直接 return, 暂停后永远恢复不了 */
+    private fun resumeOrStartSilence() {
+        val t = audioTrack
+        if (t != null) {
+            try { if (t.playState != AudioTrack.PLAYSTATE_PLAYING) t.play() } catch (_: Exception) {}
+            pinA2dp()
+            return
+        }
+        startSilence()
     }
 
     private fun startReal(f: File): Boolean {
         stopReal()
+        forceMediaRoute()
         return try {
             val m = MediaPlayer()
             m.setAudioAttributes(
@@ -272,7 +286,17 @@ object MediaEngine {
             if (d > 0) durationSec = d   // 真实时长优先于播放列表第4列
             mp = m
             realFor = f
-            pinPlayerA2dp(m)
+            if (!pinPlayerA2dp(m)) {
+                // A2DP 输出设备可能晚于播放就绪(车机重连时序) → 后台补绑直到成功或播放器被换
+                thread(isDaemon = true, name = "vphone-pin") {
+                    repeat(20) {
+                        Thread.sleep(500)
+                        val cur = mp ?: return@thread
+                        if (cur !== m) return@thread
+                        if (pinPlayerA2dp(cur)) return@thread
+                    }
+                }
+            }
             Log.i(CallEngine.TAG, "真实音频播放: ${f.name} ${durationSec}s")
             true
         } catch (e: Exception) {
@@ -280,6 +304,26 @@ object MediaEngine {
             stopReal()
             if (silenceWanted) startSilence()
             false
+        }
+    }
+
+    /**
+     * EMUI 坑: SCO 通话通道挂着时(通话音频残留/HFP 抢占), 媒体会被混进 8kHz 窄带通话通道
+     * 或压制 A2DP → 车机上"电话音质"+断断续续。播真实音频前强制释放 SCO。
+     * 通话中(ringing/dialing/active/held)不抢 —— 那时 SCO 属于通话本身。
+     */
+    private fun forceMediaRoute() {
+        try {
+            val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val cs = CallEngine.state
+            if (am.isBluetoothScoOn && cs != "active" && cs != "ringing" && cs != "dialing" && cs != "held") {
+                am.isBluetoothScoOn = false
+                am.stopBluetoothSco()
+                EventLog.add("MEDIA_SCO_RELEASED", "app", "播放前释放挂起的SCO, 媒体改走A2DP")
+                Log.w(CallEngine.TAG, "释放挂起的 SCO, 媒体改走 A2DP")
+            }
+        } catch (t: Throwable) {
+            Log.w(CallEngine.TAG, "SCO 释放失败: ${t.message}")
         }
     }
 
@@ -382,7 +426,7 @@ object MediaEngine {
     fun setSilence(on: Boolean): String {
         silenceWanted = on
         if (mp != null && on) return "静音流开关=$on (当前在放真实音频, 静音流不参与)"
-        if (on) startSilence() else stopSilence()
+        if (on) resumeOrStartSilence() else stopSilence()
         return if (on) "静音流已开(保持A2DP活跃)" else "静音流已关"
     }
 
@@ -482,19 +526,22 @@ object MediaEngine {
         }
     }
 
-    /** MediaPlayer 绑 A2DP: setPreferredDevice 系 API 28+ */
-    private fun pinPlayerA2dp(m: MediaPlayer) {
-        if (Build.VERSION.SDK_INT < 28) return
-        try {
+    /** MediaPlayer 绑 A2DP: setPreferredDevice 系 API 28+。返回是否绑定成功(失败可重试) */
+    private fun pinPlayerA2dp(m: MediaPlayer): Boolean {
+        if (Build.VERSION.SDK_INT < 28) return false
+        return try {
             val a2 = findA2dpDevice()
             if (a2 != null) {
                 m.preferredDevice = a2
                 Log.i(CallEngine.TAG, "真实音频已绑定 A2DP 输出: ${a2.productName}")
+                true
             } else {
                 Log.w(CallEngine.TAG, "未见 A2DP 输出设备(可能未连), 真实音频暂用默认路由")
+                false
             }
         } catch (t: Throwable) {
             Log.w(CallEngine.TAG, "真实音频 A2DP 绑定失败: ${t.message}")
+            false
         }
     }
 
@@ -518,12 +565,44 @@ object MediaEngine {
         silenceThread = null
     }
 
+    private fun silenceState(): String {
+        val t = audioTrack ?: return "off"
+        return when (t.playState) {
+            AudioTrack.PLAYSTATE_PLAYING -> "running"
+            AudioTrack.PLAYSTATE_PAUSED -> "paused"
+            else -> "state${t.playState}"
+        }
+    }
+
     fun status(): String =
         "media=${if (playing) "playing" else "paused"} " +
             "track=\"$title\"/$artist pos=${posSec}s dur=${durationSec}s " +
             "playlist=${playlist.size}首 idx=$plIndex autoAdvance=$autoAdvance " +
             "real=${if (mp != null) realFor?.name else "none"} " +
-            "silence=${if (silenceWanted) "on" else "off"} focus=${if (focused) "held" else "none"}"
+            "silence=${silenceState()}/${if (silenceWanted) "on" else "off"} focus=${if (focused) "held" else "none"}"
+
+    /** 音质/断续问题排查: 实际输出设备 + SCO 状态 + 绑定情况一目了然 */
+    fun diag(): String {
+        val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val devs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            .joinToString(", ") { devName(it.type) }
+        val pref = if (Build.VERSION.SDK_INT >= 23)
+            (mp?.preferredDevice ?: audioTrack?.preferredDevice)?.productName ?: "未绑"
+        else "SDK<23"
+        val mpPlaying = try { mp?.isPlaying } catch (_: Exception) { null }
+        return "playing=$playing mpIsPlaying=$mpPlaying real=${realFor?.name ?: "none"}\n" +
+            "silence=${silenceState()} scoOn=${am.isBluetoothScoOn} musicActive=${am.isMusicActive} preferred=$pref\n" +
+            "outputs=[$devs]"
+    }
+
+    private fun devName(t: Int): String = when (t) {
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "A2DP"
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "SCO"
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "SPK"
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "WIRE_HP"
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "WIRE_HS"
+        else -> "type$t"
+    }
 
     private fun takeFocus(): Boolean {
         if (focused) return true
