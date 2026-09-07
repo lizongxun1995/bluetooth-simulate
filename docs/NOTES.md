@@ -512,7 +512,54 @@ logcat | grep -iE "hfp|avrcp|bluetooth"` 抓 profile 层证据。
 失败路径：门C' 不传导 HFP → 如实记录 → BlueZ 备选升级。
 
 
-### WinRT 三个暂缓修复的根因存档（防丢：将来若重启 WinRT 路线，从这里开始）
+### vphone 台架第一轮调试（2026-09-07 下午）：三问题闭环 + 车机电话三流定案
+
+用户 GUI 实测报三问题：①配对仍有弹窗 ②断开后无法重连 ③"播放失效但元数据成功"。
+手机 dumpsys 取证（比看现象准）还原了完整时间线：
+
+- **14:45:11-12 配对成功 → A2DP/HFP 全自动连上**（CONNECT→CONNECTED 各 ~1s，stack 自动）；
+- **14:47:56-14:48:02 车机发了真实 AT 指令**（EVENT_TYPE_HANGUP_CALL=CHUP ×3、AT+CLCC 轮询；
+  Telecom 自动回 CLCC）→ 电话链路+回调全通；
+- **14:48:11.753/760 HFP 与 A2DP 同毫秒 STACK_EVENT→DISCONNECTED** = **车机侧掐掉整条 ACL**
+  （车机蓝牙重启/车机端主动断开）。此后车机上一切无反应 —— 问题③"播放失效"其实是问题②
+  的连带：元数据"推送成功"只是手机侧返回 200，车机根本没收到。media_session dump 证明
+  VPhoneMedia active=true 且就是系统 Media button session、state=2/pos=71s —— App 侧无辜。
+
+**修复① 配对零弹窗（AutoPairService 无障碍自动点）**：PIN 模式 setPin 反射已静默；
+consent/数字比较模式 setPairingConfirmation 需系统权限（华为 Android 10 实测仍弹）→
+新增无障碍服务自动点弹窗肯定键（**精确匹配**"配对/确定/允许/OK"，否定词绝不点）。
+一次性启用（保留已有服务）：`vphone_lib.enable_autoconfirm()`（settings put secure
+enabled_accessibility_services 追加 + accessibility_enabled=1；Android 13+ 需手动开）。
+
+**修复② 断线重连（实测通过 ✅）**：`/bt/reconnect`（GUI"🔌重连"按钮）三条路：
+`device.connect()` 反射被华为挡（不可用）→ **A2DP.connect/HFP.connect profile 代理反射
+在 Android 10 可用（BLUETOOTH_ADMIN 即可）** → 兜底蓝牙开关循环。实测 15:07:44 A2DP
+CONNECTED、15:07:46 HFP CONNECTED，bt_state 出 `[A2DP已连] [HFP已连]`。另：配对完成
+自动 setPriority(100)；A2DP 的 setPriority 签名被华为改了（NoSuchMethod，无碍——
+连接时 stack 自己写了 1000）；新增 ACL/HFP/A2DP 状态变化事件上报（掉线瞬间 GUI 可见）。
+
+**修复③ 播放加固**：play 时 `requestAudioFocus(GAIN)`（车机 AVRCP 路由跟随焦点，
+dump 确认已持有）+ 每次 play 重抢 `isActive`；静音流默认开；AudioTrack 重写为
+`AudioTrack.Builder(USAGE_MEDIA/CONTENT_TYPE_MUSIC)` + ≥2s 缓冲 + 写线程 15s 心跳 +
+意外退出 2s 自愈（旧版 STREAM_MUSIC 构造器 + sleep(400) 有断流嫌疑，待车机复测
+`dumpsys bluetooth_manager | grep mIsPlaying`）。
+
+**修复④ 车机拨出路由（ATD）**：手机有 SIM telephony 账号（CallProvider）会抢 ATD →
+`telecom set-user-selected-outgoing-phone-account com.bt.vphone/.VPhoneConnectionService VPHONE 0`
+把 VPHONE 设默认去电账号（enable_account() 已并入此命令）→ 车机拨号 →
+onCreateOutgoingConnection → **3s 自动接通**（模拟对端摘机，`/call/auto-outgoing?on=0` 可关，
+GUI 有勾选框）。车机电话三流全定案：接听=ATA→onAnswer、拒接→onReject、挂断=CHUP→onDisconnect，
+全部有 dumpsys 实证；CLCC 由 Telecom 自动应答，App 无需实现。
+
+**免确认安装调研（放弃 input tap）**：华为 adb install 弹 InstallStaging 确认框
+（120s 超时实证）；uiautomator dump 找按钮坐标方案因厂商弹窗差异大被否。`install()` 降级为
+adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需手点一次）。
+
+**jar 化结论（用户问 u2.jar/scrcpy.jar 那样直接推）**：不可行。app_process jar 以 shell
+身份跑、无包身份，而 Telecom ConnectionService 绑定/PhoneAccount 注册/MediaSession AVRCP
+身份全都要求真实安装的 App 包。门B/门C 必须留在 APK；更新痛点靠 install() 缓解。
+
+
 
 1. **总时长始终 0**：`DisplayUpdater.Update()` 触发的 TRACK_CHANGED 里，车机采样的是**旧
    timeline**。修法 = **PushTimeline 要在 Update() 之前 AND 之后各推一次**（后推那次才会被

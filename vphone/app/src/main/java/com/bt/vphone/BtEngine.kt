@@ -51,6 +51,10 @@ object BtEngine {
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
             addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
             addAction(BluetoothDevice.ACTION_PAIRING_REQUEST)
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+            addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
         }
         app.registerReceiver(rx, f)
         try {
@@ -98,10 +102,30 @@ object BtEngine {
                     val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
                     val s = i.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
                     evt("配对状态: ${sName(d)} ${d.address} → ${bondStr(s)}")
+                    if (s == BluetoothDevice.BOND_BONDED) {
+                        setPrioBestEffort(d)
+                        evt("已配对完成 → 若 A2DP/HFP 未自动连, 用 /bt/reconnect?mac=${d.address}")
+                    }
                 }
                 BluetoothDevice.ACTION_PAIRING_REQUEST -> {
                     val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
                     handlePairing(d, i.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, -1))
+                }
+                BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                    val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                    evt("ACL 链路已建立: ${sName(d)} ${d.address}")
+                }
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                    val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                    evt("ACL 链路已断开: ${sName(d)} ${d.address} (车机侧关蓝牙/离场) → /bt/reconnect 可发起回连")
+                }
+                BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED -> {
+                    val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                    evt("A2DP 状态: ${sName(d)} → ${profStr(i.getIntExtra(BluetoothProfile.EXTRA_STATE, -1))}")
+                }
+                BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
+                    val d = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                    evt("HFP 状态: ${sName(d)} → ${profStr(i.getIntExtra(BluetoothProfile.EXTRA_STATE, -1))}")
                 }
             }
         }
@@ -199,6 +223,86 @@ object BtEngine {
         }
     }
 
+    /**
+     * 断线重连(手机侧主动发起)。三条路:
+     * ① 反射 BluetoothDevice.connect()(API 29+ 隐藏, 部分 ROM 可用);
+     * ② A2DP/HFP profile 代理反射 connect();
+     * ③ 兜底: 蓝牙关→2s→开, 触发系统对 priority=ON 的已配对设备自动回连。
+     * 结果看事件流(ACL/HFP/A2DP 状态)或 /bt/state 的 [A2DP已连]/[HFP已连]。
+     */
+    fun reconnect(target: String, fallback: Boolean = true): String {
+        val ad = adapter ?: return "无蓝牙适配器"
+        if (target.isBlank()) return "用法: /bt/reconnect?mac=<MAC或名字片段>"
+        val d = ad.bondedDevices.firstOrNull {
+            it.address.equals(target, true) || sName(it).contains(target, true)
+        } ?: return "未找到已配对设备: $target (/bt/state 查列表)"
+        val sb = StringBuilder("重连 ${sName(d)} ${d.address}:\n")
+
+        var devOk: Boolean? = null
+        try {
+            val m: Method = d.javaClass.getMethod("connect")
+            devOk = m.invoke(d) as? Boolean ?: false
+            sb.append("① BluetoothDevice.connect() → $devOk\n")
+        } catch (e: Throwable) {
+            sb.append("① device.connect 不可用(${cause(e)})\n")
+        }
+
+        var proxyOk = 0
+        val a2 = a2dp
+        if (a2 != null) try {
+            val m: Method = a2.javaClass.getMethod("connect", BluetoothDevice::class.java)
+            val r = m.invoke(a2, d) as? Boolean ?: false
+            if (r) proxyOk++
+            sb.append("② A2DP.connect → $r\n")
+        } catch (e: Throwable) {
+            sb.append("② A2DP.connect 不可用(${cause(e)})\n")
+        }
+        val hs = headset
+        if (hs != null) try {
+            val m: Method = hs.javaClass.getMethod("connect", BluetoothDevice::class.java)
+            val r = m.invoke(hs, d) as? Boolean ?: false
+            if (r) proxyOk++
+            sb.append("③ HFP.connect → $r\n")
+        } catch (e: Throwable) {
+            sb.append("③ HFP.connect 不可用(${cause(e)})\n")
+        }
+
+        if (fallback && devOk != true && proxyOk == 0) {
+            sb.append("④ 兜底: 蓝牙关→2s→开(系统自动回连 priority=ON 设备)\n")
+            Thread {
+                try {
+                    setEnabled(false)
+                    Thread.sleep(2000)
+                    setEnabled(true)
+                    evt("兜底蓝牙重启完成, 等系统自动回连…")
+                } catch (_: Throwable) {
+                }
+            }.start()
+        }
+        sb.append("→ 看事件流(ACL/HFP/A2DP)或 /bt/state 的 [A2DP已连]/[HFP已连]")
+        evt("发起重连: ${sName(d)}")
+        return sb.toString().trim()
+    }
+
+    /** 配对完成后把 A2DP/HFP priority 置 ON(100), 保证系统自动回连愿意连它 */
+    private fun setPrioBestEffort(d: BluetoothDevice) {
+        val proxies = listOf(a2dp to "A2DP", headset to "HFP")
+        for (p in proxies) {
+            val proxy = p.first ?: continue
+            try {
+                val m: Method = proxy.javaClass.getMethod(
+                    "setPriority", BluetoothDevice::class.java, Int::class.javaPrimitiveType
+                )
+                m.invoke(proxy, d, 100) // PRIORITY_ON
+                evt("${p.second} priority → 100(ON)")
+            } catch (e: Throwable) {
+                evt("${p.second} setPriority 不可用(${cause(e)})")
+            }
+        }
+    }
+
+    private fun cause(t: Throwable) = t.cause?.message ?: t.message ?: t.javaClass.simpleName
+
     @SuppressLint("MissingPermission")
     fun state(): String {
         val ad = adapter ?: return "无蓝牙适配器"
@@ -266,6 +370,14 @@ object BtEngine {
         3 -> "同意即配"      // PAIRING_VARIANT_CONSENT(隐藏常量)
         1 -> "输入密钥"      // PAIRING_VARIANT_PASSKEY(隐藏常量)
         else -> "其他($v)"
+    }
+
+    private fun profStr(s: Int) = when (s) {
+        BluetoothProfile.STATE_DISCONNECTED -> "DISCONNECTED"
+        BluetoothProfile.STATE_CONNECTING -> "CONNECTING"
+        BluetoothProfile.STATE_CONNECTED -> "CONNECTED"
+        BluetoothProfile.STATE_DISCONNECTING -> "DISCONNECTING"
+        else -> "?$s"
     }
 
     private fun evt(msg: String) {

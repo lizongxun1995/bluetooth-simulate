@@ -1,6 +1,8 @@
 package com.bt.vphone
 
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.telecom.Connection
 import android.telecom.ConnectionRequest
 import android.telecom.ConnectionService
@@ -15,6 +17,8 @@ import android.util.Log
  * 车机上的接听/拒接/挂断/保持/DTMF 按键全部落到 VConnection 的回调。
  */
 class VPhoneConnectionService : ConnectionService() {
+
+    private val main = Handler(Looper.getMainLooper())
 
     override fun onCreateIncomingConnection(
         connectionManagerPhoneAccount: PhoneAccountHandle?,
@@ -45,6 +49,20 @@ class VPhoneConnectionService : ConnectionService() {
             )
             setDialing()
             CallEngine.attach(this, tel, "dialing")
+            // 车机拨出(ATD)后模拟对端 3s 摘机 —— 否则车机永远停在"拨号中"
+            if (CallEngine.autoAnswerOutgoing) {
+                val conn = this
+                main.postDelayed({
+                    try {
+                        if (CallEngine.state == "dialing" && CallEngine.connection == conn) {
+                            conn.setActive()
+                            CallEngine.setState("active")
+                            CallEngine.evt("车机拨出 $tel 已自动接通(模拟对端 3s 摘机)")
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }, 3000)
+            }
         }
     }
 }

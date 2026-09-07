@@ -12,6 +12,10 @@
   python vphone_ctl.py playlist --file demo_pl.txt  # 播放列表(每行: 标题|歌手|专辑|秒)
   python vphone_ctl.py play / pause / next / prev / silence / autoadvance
   python vphone_ctl.py bt-state / scan / bond --mac CARKIT-1 / unpair --mac CARKIT-2
+  python vphone_ctl.py reconnect --mac CARKIT-1            # 断线重连(A2DP+HFP)
+  python vphone_ctl.py enable-account                 # 启用电话账号+设为默认去电账号
+  python vphone_ctl.py enable-autoconfirm             # 配对弹窗自动点(无障碍, 一次性)
+  python vphone_ctl.py install [apk路径]              # 更新APK并自动拉起服务
   python vphone_ctl.py events                       # 实时事件流(Ctrl+C 退出)
 
 多设备: --serial 指定手机序列号, 或环境变量 VPHONE_SERIAL。
@@ -113,6 +117,14 @@ def main():
             print(vp.bt_unpair(args.mac))
         elif c == "bt-enable":
             print(vp.bt_enable(args.on != "0"))
+        elif c == "reconnect":
+            print(vp.bt_reconnect(args.mac))
+        elif c == "auto-outgoing":
+            print(vp.set_auto_outgoing(args.on != "0"))
+        elif c == "enable-autoconfirm":
+            print(vp.enable_autoconfirm())
+        elif c == "install":
+            print(vp.install(args.file))
         else:
             sys.exit(f"!! 未知命令 {c}")
     except VPhoneError as e:

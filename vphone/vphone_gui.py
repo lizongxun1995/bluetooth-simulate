@@ -72,7 +72,7 @@ class App:
         for text, fn in (("▶播放", lambda: self.vp.play()), ("⏸暂停", lambda: self.vp.pause()),
                          ("⏮上一曲", lambda: self.vp.prev()), ("⏭下一曲", lambda: self.vp.next())):
             ttk.Button(r2, text=text, command=lambda f=fn: self._run(f)).pack(side="left", padx=2)
-        self.var_silence = tk.BooleanVar(value=False)
+        self.var_silence = tk.BooleanVar(value=True)
         ttk.Checkbutton(r2, text="静音流(保活A2DP)", variable=self.var_silence,
                         command=self._set_silence).pack(side="left", padx=10)
         ttk.Button(r2, text="载入demo播放列表", command=self._load_playlist).pack(side="left", padx=2)
@@ -91,6 +91,9 @@ class App:
                          ("拨出", self._dial),
                          ("🎧蓝牙通话音频", lambda: self.vp.audio_bt())):
             ttk.Button(r3, text=text, command=lambda f=fn: self._run(f)).pack(side="left", padx=2)
+        self.var_autoout = tk.BooleanVar(value=True)
+        ttk.Checkbutton(r3, text="车机拨出3s自动接通", variable=self.var_autoout,
+                        command=self._set_auto_outgoing).pack(side="left", padx=10)
 
         # ---- 蓝牙 ----
         f3 = ttk.LabelFrame(left, text="蓝牙 (扫描/配对不出App; 已配对设备带 [A2DP已连]/[HFP已连] 标记)")
@@ -100,6 +103,7 @@ class App:
         ttk.Button(r4, text="已配对/状态", command=lambda: self._run(self.vp.bt_state)).pack(side="left", padx=2)
         ttk.Button(r4, text="配对选中", command=self._bond_sel).pack(side="left", padx=2)
         ttk.Button(r4, text="解配选中", command=self._unpair_sel).pack(side="left", padx=2)
+        ttk.Button(r4, text="🔌重连(断线恢复)", command=self._reconnect_sel).pack(side="left", padx=2)
         ttk.Button(r4, text="启用电话账号", command=lambda: self._run(self.vp.enable_account)).pack(side="right")
         self.lb_bt = tk.Listbox(f3, height=5)
         self.lb_bt.pack(fill="both", expand=True, padx=4, pady=2)
@@ -161,6 +165,15 @@ class App:
     def _set_silence(self):
         self._run(lambda: self.vp.silence(self.var_silence.get()))
 
+    def _set_auto_outgoing(self):
+        self._run(lambda: self.vp.set_auto_outgoing(self.var_autoout.get()))
+
+    def _reconnect_sel(self):
+        """列表选中了设备就重连它; 没选就自动重连第一台已配对设备。"""
+        sel = self.lb_bt.curselection()
+        target = self.bt_devs[sel[0]]["mac"] if sel else None
+        self._run(lambda: self.vp.bt_reconnect(target))
+
     def _scan(self):
         def task():
             try:
@@ -206,6 +219,9 @@ class App:
                                          foreground="#0a7")
                     self.log("=== 已连接, 服务已拉起 ===")
                     self._run(self.vp.bt_state)
+                    # 一次性环境加固(幂等): 配对弹窗自动确认 + 车机拨出走 VPhone 账号
+                    self._run(self.vp.enable_autoconfirm)
+                    self._run(self.vp.set_auto_outgoing(True))
                 elif kind == "connfail":
                     self.lbl_conn.config(text="连接失败", foreground="#c22")
                     self.log("!! 连接失败: " + payload)

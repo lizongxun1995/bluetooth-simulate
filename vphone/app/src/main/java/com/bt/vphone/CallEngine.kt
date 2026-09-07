@@ -31,6 +31,8 @@ object CallEngine {
         private set
     var connection: Connection? = null
     var lastEvent: String = "无"
+    /** 车机拨出(ATD)后 3s 自动置通话中(模拟对端摘机); 关掉则停在拨号态等 answer */
+    var autoAnswerOutgoing = true
 
     val handle: PhoneAccountHandle by lazy {
         PhoneAccountHandle(ComponentName(app, VPhoneConnectionService::class.java), "VPHONE")
@@ -146,6 +148,11 @@ object CallEngine {
         // Connection 无出站 DTMF API; 车机侧按键会回流 VConnection.onPlayDtmfTone
         evt("DTMF 按键模拟: $ch (等车机侧回流 onPlayDtmfTone)")
         return "DTMF $ch 已记录为事件"
+    }
+
+    fun setAutoOutgoing(on: Boolean): String {
+        autoAnswerOutgoing = on
+        return "车机拨出自动接通=$on (3s 后置通话中)"
     }
 
     /** 加分项: 请求把通话音频路由到蓝牙(SCO) —— 观察车机是否建立通话音频链路。 */

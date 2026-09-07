@@ -1,14 +1,16 @@
 package com.bt.vphone
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -42,9 +44,14 @@ object MediaEngine {
     var plIndex = 0
         private set
 
-    @Volatile private var silenceWanted = false
+    /** 静音流默认开: 车机 A2DP 需要真实音频流才会进入"播放中"并接受播放控制 */
+    @Volatile private var silenceWanted = true
     private var audioTrack: AudioTrack? = null
     private var silenceThread: Thread? = null
+
+    // 音频焦点: 真播放器行为 —— play 时抢占 USAGE_MEDIA 焦点, 车机 AVRCP 按键路由跟着焦点走
+    private var focusListener: AudioManager.OnAudioFocusChangeListener? = null
+    private var focused = false
 
     fun init(ctx: Context) {
         app = ctx.applicationContext
@@ -127,11 +134,14 @@ object MediaEngine {
 
     fun play(): String {
         playing = true
+        session?.isActive = true   // 每次播放重新抢占媒体会话(防被其它 App 顶掉)
+        takeFocus()
         pushMeta()
         pushState()
         startTicker()
         if (silenceWanted) startSilence()
-        return "播放中: ${trackDesc()}"
+        pinA2dp()   // A2DP 可能晚于建流转连, 每次播放补绑一次
+        return "播放中: ${trackDesc()} (音频焦点=${if (focused) "已获取" else "未获取"})"
     }
 
     fun pause(): String {
@@ -237,22 +247,52 @@ object MediaEngine {
         return if (on) "静音流已开(保持A2DP活跃)" else "静音流已关"
     }
 
-    @SuppressLint("Deprecation")
     private fun startSilence() {
         if (audioTrack != null) return
         try {
             val rate = 44100
-            val buf = ByteArray(rate * 2) // 1 秒单声道 16bit 全零 = 静音
-            audioTrack = AudioTrack(
-                AudioManager.STREAM_MUSIC, rate,
-                AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                buf.size * 2, AudioTrack.MODE_STREAM
-            ).also { it.play() }
+            val minBuf = AudioTrack.getMinBufferSize(
+                rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
+            )
+            audioTrack = if (Build.VERSION.SDK_INT >= 23) {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(rate)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(maxOf(minBuf * 2, rate * 4)) // ≥2s
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+            } else {
+                @Suppress("DEPRECATION")
+                AudioTrack(AudioManager.STREAM_MUSIC, rate,
+                    AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                    maxOf(minBuf * 2, rate * 4), AudioTrack.MODE_STREAM)
+            }
+            audioTrack?.play()
+            pinA2dp()
             silenceThread = thread(isDaemon = true, name = "vphone-silence") {
+                val buf = ByteArray(rate * 2) // 1 秒 16bit 单声道全零 = 静音
+                var sec = 0
                 while (silenceWanted && audioTrack != null) {
                     try {
-                        audioTrack?.write(buf, 0, buf.size)
-                        Thread.sleep(400)
+                        val n = audioTrack?.write(buf, 0, buf.size) ?: break
+                        if (n < 0) {
+                            Log.w(CallEngine.TAG, "静音流写返回 $n, 线程退出")
+                            break
+                        }
+                        sec++
+                        if (sec % 15 == 1)
+                            Log.i(CallEngine.TAG, "静音流心跳 ${sec}s playState=${audioTrack?.playState}")
                     } catch (_: InterruptedException) {
                         break
                     } catch (e: Exception) {
@@ -260,20 +300,58 @@ object MediaEngine {
                         break
                     }
                 }
+                if (silenceWanted) {
+                    // 意外退出(A2DP 建立瞬间路由切换等) → 自愈重建, 保证流不断
+                    Log.w(CallEngine.TAG, "静音流意外退出, 2s 后自动重建")
+                    main.postDelayed({
+                        if (silenceWanted) {
+                            stopSilence()
+                            startSilence()
+                        }
+                    }, 2000)
+                }
             }
             Log.i(CallEngine.TAG, "静音流已启动(44.1kHz mono)")
         } catch (e: Exception) {
             Log.w(CallEngine.TAG, "静音流启动失败: ${e.message}")
+            audioTrack = null
+        }
+    }
+
+    /**
+     * EMUI 坑: HFP 连上后系统把媒体主输出切到 SCO 通话通道(BLUETOOTH_SCO_CARKIT),
+     * A2DP 不被选中 → 车机收不到流(dumpsys bluetooth_manager mIsPlaying=false)。
+     * 修法: 把静音轨道硬绑到 A2DP 输出设备(setPreferredDevice)。
+     */
+    private fun pinA2dp() {
+        if (Build.VERSION.SDK_INT < 23) return
+        try {
+            val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val a2 = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+            if (a2 != null) {
+                audioTrack?.preferredDevice = a2
+                Log.i(CallEngine.TAG, "静音流已绑定 A2DP 输出: ${a2.productName}")
+            } else {
+                Log.w(CallEngine.TAG, "未见 A2DP 输出设备(可能未连), 暂用系统默认路由")
+            }
+        } catch (t: Throwable) {
+            Log.w(CallEngine.TAG, "A2DP 路由绑定失败: ${t.message}")
         }
     }
 
     private fun stopSilence() {
+        silenceThread?.interrupt()
         try {
             audioTrack?.stop()
+        } catch (_: Exception) {
+        }
+        try {
             audioTrack?.release()
         } catch (_: Exception) {
         }
         audioTrack = null
+        silenceThread = null
     }
 
     private fun evt(msg: String) {
@@ -288,11 +366,37 @@ object MediaEngine {
         "media=${if (playing) "playing" else "paused"} " +
             "track=\"$title\"/$artist pos=${posSec}s dur=${durationSec}s " +
             "playlist=${playlist.size}首 idx=$plIndex autoAdvance=$autoAdvance " +
-            "silence=${if (silenceWanted) "on" else "off"}"
+            "silence=${if (silenceWanted) "on" else "off"} focus=${if (focused) "held" else "none"}"
+
+    private fun takeFocus(): Boolean {
+        if (focused) return true
+        return try {
+            val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val l = AudioManager.OnAudioFocusChangeListener { }
+            val r = am.requestAudioFocus(l, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+            focused = r == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            if (focused) focusListener = l
+            focused
+        } catch (t: Throwable) {
+            Log.w(CallEngine.TAG, "音频焦点获取失败: ${t.message}")
+            false
+        }
+    }
+
+    private fun abandonFocus() {
+        try {
+            val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            focusListener?.let { am.abandonAudioFocus(it) }
+        } catch (_: Throwable) {
+        }
+        focused = false
+        focusListener = null
+    }
 
     fun release() {
         stopTicker()
         stopSilence()
+        abandonFocus()
         session?.release()
         session = null
     }

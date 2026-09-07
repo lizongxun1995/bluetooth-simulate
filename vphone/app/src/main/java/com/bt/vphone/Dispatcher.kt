@@ -15,6 +15,7 @@ object Dispatcher {
         "hold" to "/call/hold",
         "dtmf" to "/call/dtmf",
         "audio_bt" to "/call/audio-bt",
+        "auto_outgoing" to "/call/auto-outgoing",
         "track" to "/media/track",
         "play" to "/media/play",
         "pause" to "/media/pause",
@@ -28,6 +29,7 @@ object Dispatcher {
         "scan_result" to "/bt/scan-result",
         "bond" to "/bt/bond",
         "unpair" to "/bt/unpair",
+        "reconnect" to "/bt/reconnect",
         "bt_enable" to "/bt/enable",
         "status" to "/status",
         "help" to "/help"
@@ -51,6 +53,7 @@ object Dispatcher {
                 "/call/hold" -> CallEngine.hold((q["on"] ?: "1") != "0")
                 "/call/dtmf" -> CallEngine.dtmf(q["key"] ?: "")
                 "/call/audio-bt" -> CallEngine.audioBluetooth()
+                "/call/auto-outgoing" -> CallEngine.setAutoOutgoing((q["on"] ?: "1") != "0")
 
                 "/media/track" -> MediaEngine.setTrack(
                     q["title"] ?: "", q["artist"] ?: "", q["album"] ?: "",
@@ -72,6 +75,9 @@ object Dispatcher {
                 "/bt/scan-result" -> BtEngine.scanResult()
                 "/bt/bond" -> BtEngine.bond(q["mac"] ?: q["name"] ?: "")
                 "/bt/unpair" -> BtEngine.unpair(q["mac"] ?: q["name"] ?: "")
+                "/bt/reconnect" -> BtEngine.reconnect(
+                    q["mac"] ?: q["name"] ?: "", (q["fallback"] ?: "1") != "0"
+                )
                 "/bt/enable" -> BtEngine.setEnabled((q["on"] ?: "1") != "0")
 
                 else -> "未知路径: $p\n${statusAll()}"
@@ -90,5 +96,5 @@ object Dispatcher {
             "HTTP: curl \"http://<手机IP>:8800/call/incoming?number=13800138000\"\n" +
             "     (PC 亦可 adb forward tcp:18800 tcp:8800 后用 127.0.0.1:18800)\n" +
             "adb : adb shell am broadcast -a com.bt.vphone.CMD --es cmd incoming --es number 13800138000\n" +
-            "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt  /media/track|play|pause|next|prev|silence|autoadvance|playlist"
+            "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing  /media/track|play|pause|next|prev|silence|autoadvance|playlist  /bt/state|scan|scan-result|bond|unpair|reconnect|enable"
 }

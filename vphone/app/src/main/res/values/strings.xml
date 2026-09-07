@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="auto_pair_desc">车载蓝牙测试专用: 蓝牙配对弹窗出现时自动点击「配对/确定」，实现无人值守配对。仅安装在测试台架手机上。</string>
+</resources>

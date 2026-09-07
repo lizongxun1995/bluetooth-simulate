@@ -47,6 +47,20 @@
             </intent-filter>
         </service>
 
+        <!-- 配对弹窗自动确认: consent 模式系统弹框由它自动点「配对」; adb 一次性启用 -->
+        <service
+            android:name=".AutoPairService"
+            android:exported="true"
+            android:label="VPhone 配对自动确认"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/auto_pair" />
+        </service>
+
         <!-- adb 控制面: am broadcast -a com.bt.vphone.CMD, extras: cmd=incoming number=13800138000 -->
         <receiver android:name=".ControlReceiver" android:exported="true">
             <intent-filter>

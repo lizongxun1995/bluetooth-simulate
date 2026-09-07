@@ -5,7 +5,8 @@
 一台 Android 手机装上 vphone APK 后, 即成为 PC 可远程驱动的蓝牙测试终端:
   门B(媒体): set_track/playlist/play/pause/next/prev + 车机按键回流(wait_for)
   门C(电话): incoming/dial/answer/hangup/hold/dtmf/audio_bt + 车机接听挂断回流
-  蓝牙:      bt_scan/bt_bond/bt_unpair/bt_state/bt_enable (配对不需要系统设置页)
+  蓝牙:      bt_scan/bt_bond/bt_unpair/bt_reconnect/bt_state/bt_enable (配对不出App)
+  部署:      install() 更新APK并自动拉起 + enable_autoconfirm() 配对弹窗自动点
 
 传输: 默认 adb forward(USB, 127.0.0.1:18800 → 手机 8800); 同 WiFi 可 base="http://手机IP:8800"。
 事件: start_events() 后台线程收 logcat(TAG=VPhone), wait_for(pattern) 做断言等待。
@@ -48,6 +49,7 @@ PATHS = {
     "hold": "/call/hold",
     "dtmf": "/call/dtmf",
     "audio_bt": "/call/audio-bt",
+    "auto_outgoing": "/call/auto-outgoing",
     "track": "/media/track",
     "play": "/media/play",
     "pause": "/media/pause",
@@ -61,6 +63,7 @@ PATHS = {
     "scan_result": "/bt/scan-result",
     "bond": "/bt/bond",
     "unpair": "/bt/unpair",
+    "reconnect": "/bt/reconnect",
     "bt_enable": "/bt/enable",
 }
 
@@ -164,9 +167,32 @@ class VPhone:
         return self.broadcast("status")
 
     def enable_account(self) -> str:
-        """启用电话账号(免手动设置页; 厂商差异: 不支持时用 App 界面手动启用)。"""
-        r = self._adb("shell", "telecom", "set-phone-account-enabled", *ACCOUNT_ARGS, timeout=15)
-        return (r.stdout + r.stderr).strip() or "(空输出)"
+        """启用电话账号 + 设为默认去电账号(车机 ATD 拨出才会进 VPhone 而非 SIM)。"""
+        r1 = self._adb("shell", "telecom", "set-phone-account-enabled", *ACCOUNT_ARGS, timeout=15)
+        r2 = self._adb("shell", "telecom", "set-user-selected-outgoing-phone-account",
+                       *ACCOUNT_ARGS, timeout=15)
+        return "set-phone-account-enabled: {}\nset-user-selected-outgoing: {}".format(
+            (r1.stdout + r1.stderr).strip() or "(空)",
+            (r2.stdout + r2.stderr).strip() or "(空)")
+
+    A11Y_COMP = f"{PKG}/.AutoPairService"
+
+    def enable_autoconfirm(self) -> str:
+        """启用配对弹窗自动确认(无障碍服务; 一次性, 保留已有无障碍服务)。
+        之后车机配对全程零人工 —— PIN 模式 App 静默应答, 弹窗模式自动点「配对」。"""
+        cur = self._adb("shell", "settings", "get", "secure",
+                        "enabled_accessibility_services", timeout=15).stdout.strip()
+        comp = self.A11Y_COMP
+        if comp in cur:
+            return "配对自动确认已是启用状态"
+        new = comp if not cur else cur + ":" + comp
+        self._adb("shell", "settings", "put", "secure",
+                  "enabled_accessibility_services", new, timeout=15)
+        self._adb("shell", "settings", "put", "secure", "accessibility_enabled", "1", timeout=15)
+        chk = self._adb("shell", "settings", "get", "secure",
+                        "enabled_accessibility_services", timeout=15).stdout
+        return ("配对自动确认已启用 ✓" if comp in chk
+                else f"启用失败(现在={chk.strip()}; Android13+ 需手动: 设置→无障碍)")
 
     def status(self) -> str:
         return self.cmd("/status")
@@ -193,6 +219,10 @@ class VPhone:
 
     def audio_bt(self) -> str:
         return self.cmd("audio_bt")
+
+    def set_auto_outgoing(self, on=True) -> str:
+        """车机拨出(ATD)后是否 3s 自动接通(模拟对端摘机)。默认开。"""
+        return self.cmd("auto_outgoing", on="1" if on else "0")
 
     # ================= 门B: 媒体 =================
 
@@ -251,8 +281,47 @@ class VPhone:
     def bt_unpair(self, target) -> str:
         return self.cmd("unpair", mac=target)
 
+    def bt_reconnect(self, target=None, fallback=True) -> str:
+        """断线重连(手机侧主动发起)。target=None 时自动选第一台已配对设备。
+        返回文本含各条路径结果; 连上与否用 wait_profile(target) 断言。"""
+        if target is None:
+            for line in self.bt_state().splitlines():
+                if line.startswith("已配对:") or "已配对:" in line:
+                    target = line.split("已配对:", 1)[1].strip().split()[-1]  # MAC
+                    break
+            if not target:
+                return "(无已配对设备, 先 bt_bond)"
+        return self.cmd("reconnect", mac=target, fallback="1" if fallback else "0")
+
     def bt_enable(self, on=True) -> str:
         return self.cmd("bt_enable", on="1" if on else "0")
+
+    # ================= 部署 =================
+
+    def install(self, apk=None, timeout=120) -> str:
+        """adb install -r + 装完自动拉起服务/重建 forward。
+        注意: 部分厂商手机仍会弹一次安装确认(厂商差异大, 不做自动点屏, 需手动点一下)。
+        apk 默认取 vphone 工程构建产物 app-debug.apk。"""
+        if apk is None:
+            apk = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+        if not os.path.isfile(apk):
+            raise VPhoneError(f"APK 不存在: {apk} (先 gradle assembleDebug)")
+        try:
+            r = self._adb("install", "-r", apk, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise VPhoneError(
+                "安装超时: 手机上大概率弹了厂商安装确认框(华为/小米等), 请手动点一下后重试")
+        out = (r.stdout + r.stderr).strip()
+        if "Success" not in out:
+            raise VPhoneError(f"安装失败: {out[-300:]}")
+        # 安装后应用处于 stopped 态: 启动一次 + 重新拉服务 + 重 forward
+        self._adb("shell", "am", "start", "-n", f"{PKG}/.MainActivity", timeout=15)
+        time.sleep(1)
+        if not self._base:
+            self._setup_forward()
+        head = self.start()
+        return f"安装成功; 服务已拉起: {head}"
 
     # ================= 事件流/断言辅助 =================
 
