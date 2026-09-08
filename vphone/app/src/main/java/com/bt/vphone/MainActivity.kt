@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -68,7 +69,17 @@ class MainActivity : Activity() {
         val need = wanted.filter {
             checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
         }
-        if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
+        if (need.isNotEmpty()) {
+            try {
+                requestPermissions(need.toTypedArray(), 1)
+            } catch (e: Exception) {
+                // 定制设备(车机开发板/工控屏等)可能没有标准权限弹窗 Activity
+                // (CUSTOMIZE_REQUEST_PERMISSIONS 由厂商 launcher 处理或缺失) → 不崩,
+                // 提示走 PC 侧 pm grant 授权(vphone_lib.grant_perms 已封装)
+                toast("系统权限弹窗不可用(${e.javaClass.simpleName}) → PC 执行 vphone_ctl.py grant-perms 授权")
+                Log.w(CallEngine.TAG, "requestPermissions 不可用: ${e.message}")
+            }
+        }
     }
 
     /** 跳到电话账号启用页(厂商入口不一, 失败则提示手动路径)。 */

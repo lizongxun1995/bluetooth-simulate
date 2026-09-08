@@ -4,6 +4,7 @@ import android.content.ContentProviderOperation
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.ContactsContract
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
@@ -30,6 +31,27 @@ object ContactsEngine {
         private set
     @Volatile var lastResult = "未执行"
 
+    /**
+     * 批量任务槽位(CAS): "检查+占用"必须原子 —— 旧版 busy 先查后置, 中间还夹着
+     * hasPerm() 权限 IPC, 两个并发请求都能通过检查 → 双写线程交错、进度计数
+     * 互相覆盖、联系人重复写入。
+     */
+    private val busyLock = AtomicBoolean(false)
+
+    /** 抢占批量任务槽位; 被占着返回 false(调用方提示"进行中")。 */
+    private fun tryBeginJob(total: Int): Boolean {
+        if (!busyLock.compareAndSet(false, true)) return false
+        busy = true
+        progressDone = 0
+        progressTotal = total
+        return true
+    }
+
+    private fun endJob() {
+        busy = false
+        busyLock.set(false)
+    }
+
     private fun ctx() = CallEngine.app
 
     private fun hasPerm(): Boolean {
@@ -46,12 +68,9 @@ object ContactsEngine {
 
     /** 批量生成: /contacts/load?count=10000&prefix=联系人 → 联系人00001 / 13800000001 ... */
     fun load(count: Int, prefix: String): String {
-        if (busy) return "批量任务进行中($progressDone/$progressTotal), /contacts/status 看进度"
         if (count !in 1..50000) return "count 需在 1..50000"
         if (!hasPerm()) return noPermHint()
-        busy = true
-        progressDone = 0
-        progressTotal = count
+        if (!tryBeginJob(count)) return "批量任务进行中($progressDone/$progressTotal), /contacts/status 看进度"
         thread(name = "vphone-contacts") {
             try {
                 val t0 = System.currentTimeMillis()
@@ -64,7 +83,7 @@ object ContactsEngine {
             } catch (e: Exception) {
                 lastResult = "写入失败(第 $progressDone 个): ${e.message}"
             } finally {
-                busy = false
+                endJob()
             }
         }
         return "批量写入已启动: $count 个(名字=${prefix}00001..) → /contacts/status 看进度"
@@ -72,7 +91,6 @@ object ContactsEngine {
 
     /** 导入自定义列表: 每行 姓名|号码 或 姓名,号码 (# 注释) */
     fun import(text: String): String {
-        if (busy) return "批量任务进行中($progressDone/$progressTotal)"
         val list = text.split('\n', ';').mapNotNull { raw ->
             val line = raw.trim()
             if (line.isEmpty() || line.startsWith("#")) return@mapNotNull null
@@ -83,9 +101,7 @@ object ContactsEngine {
         }
         if (list.isEmpty()) return "无有效行(格式: 姓名|号码 或 姓名,号码)"
         if (!hasPerm()) return noPermHint()
-        busy = true
-        progressDone = 0
-        progressTotal = list.size
+        if (!tryBeginJob(list.size)) return "批量任务进行中($progressDone/$progressTotal)"
         thread(name = "vphone-contacts") {
             try {
                 val t0 = System.currentTimeMillis()
@@ -95,7 +111,7 @@ object ContactsEngine {
             } catch (e: Exception) {
                 lastResult = "导入失败(第 $progressDone 个): ${e.message}"
             } finally {
-                busy = false
+                endJob()
             }
         }
         return "导入已启动: ${list.size} 个 → /contacts/status 看进度"
@@ -103,11 +119,8 @@ object ContactsEngine {
 
     /** 只删 vphone 账号写入的联系人(按 ACCOUNT_TYPE 定点), 手机原有联系人不碰 */
     fun clear(): String {
-        if (busy) return "批量任务进行中($progressDone/$progressTotal)"
         if (!hasPerm()) return noPermHint()
-        busy = true
-        progressDone = 0
-        progressTotal = 0
+        if (!tryBeginJob(0)) return "批量任务进行中($progressDone/$progressTotal)"
         thread(name = "vphone-contacts") {
             try {
                 val n = ctx().contentResolver.delete(
@@ -119,7 +132,7 @@ object ContactsEngine {
             } catch (e: Exception) {
                 lastResult = "删除失败: ${e.message}"
             } finally {
-                busy = false
+                endJob()
             }
         }
         return "清空已启动(仅 vphone 账号联系人)"

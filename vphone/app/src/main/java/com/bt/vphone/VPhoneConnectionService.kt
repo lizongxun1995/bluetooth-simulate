@@ -86,7 +86,7 @@ class VConnection(private val tel: String) : Connection() {
     private fun answered() {
         EventLog.add(EventLog.CAR_ANSWER, "car", "车机按了【接听】(onAnswer) 号码=$tel")
         setActive()
-        CallEngine.state = "active"
+        CallEngine.setState("active")   // 走 setState: 发事件广播, 不直接改字段
     }
 
     override fun onAnswer() = answered()
@@ -103,6 +103,15 @@ class VConnection(private val tel: String) : Connection() {
     override fun onDisconnect() {
         EventLog.add(EventLog.CAR_HANGUP, "car", "车机按了【挂断】(onDisconnect) 号码=$tel")
         setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
+        destroy()
+        CallEngine.clearFromConnection()
+    }
+
+    override fun onAbort() {
+        // Telecom 系统侧主动拆线(如来电长时间未接被系统取消): 不接这层的话
+        // connection 悬挂、状态卡 ringing, 后续来电全被"已有通话"挡死
+        EventLog.add(EventLog.CALL_ENDED, "sys", "系统侧拆线(onAbort) 号码=$tel")
+        setDisconnected(DisconnectCause(DisconnectCause.ERROR))
         destroy()
         CallEngine.clearFromConnection()
     }

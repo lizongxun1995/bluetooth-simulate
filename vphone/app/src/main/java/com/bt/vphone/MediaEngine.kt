@@ -14,6 +14,7 @@ import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import kotlin.concurrent.thread
@@ -28,6 +29,10 @@ import kotlin.concurrent.thread
  *     解码播放, 时长/进度取真实值, 同样绑定 A2DP 输出 —— 车机播真歌;
  *  B) 静音流: 无文件时 AudioTrack 输出静音保活 A2DP, 元数据仍任意伪造。
  * 真机系统栈负责把 MediaSession 翻成 AVRCP 推给车机。
+ *
+ * ── 线程模型 ── 本 object 的全部状态(playing/posSec/mp/playlist/...)只在主线程
+ * 读写: MediaSession 回调、1s 心跳、Dispatcher.onMain 同步桥全部落在主线程。
+ * 新的控制入口一律经 Dispatcher.onMain{} 进来, 不要从其他线程直接调。
  */
 object MediaEngine {
     /** 第 5 列 path=乐库文件名(可空)。时长给 0 时用真实音频时长。 */
@@ -131,6 +136,8 @@ object MediaEngine {
         if (album.isNotBlank()) this.album = album
         if (dur > 0) durationSec = dur
         posSec = 0
+        seekAt = 0   // 同 applyTrack: 换曲目即作废旧 seek 防回弹窗口
+        seekPosMs = 0
         pushMeta()
         pushState()
         return "已推送: ${trackDesc()}"
@@ -193,32 +200,36 @@ object MediaEngine {
         pushState()
         stopTicker()
         try { mp?.pause() } catch (_: Exception) {}
-        // 静音流也必须停: 否则 A2DP 流继续, 车机侧看播放状态永远是"播放中"(暂停不掉)
-        try { audioTrack?.pause() } catch (_: Exception) {}
+        // 静音流必须彻底停(线程+轨), 不能只 track.pause(): 暂停的轨留着供流线程,
+        // 一旦 A2DP 路由消失(车机断连/关蓝牙), write() 会退化成立即返回+丢弃数据
+        // 的忙循环, 每秒几十万次写并刷爆 logcat(实测 16万行/s) —— 真机基准:
+        // 暂停的播放器没有活跃音频流, 恢复播放时再重建即可
+        stopSilence()
         return "已暂停: ${trackDesc()}${realTag()}"
     }
 
     fun next(): String {
-        EventLog.add("CMD_NEXT", "cmd", "指令下一曲")
+        EventLog.add(EventLog.CMD_NEXT, "cmd", "指令下一曲")
         return doAdvance(+1)
     }
 
     fun prev(): String {
-        EventLog.add("CMD_PREV", "cmd", "指令上一曲")
+        EventLog.add(EventLog.CMD_PREV, "cmd", "指令上一曲")
         return doAdvance(-1)
     }
 
     private fun doAdvance(d: Int): String {
-        if (playlist.isNotEmpty()) {
-            plIndex = (plIndex + d + playlist.size) % playlist.size
-            applyIndex()
-            // 播放中: 换文件开播; 暂停中: 释放旧播放器(恢复时从新歌0s起), 避免挂着旧文件
-            if (playing) ensureAudioOut() else stopReal()
-        } else {
-            posSec = 0
+        if (playlist.isEmpty()) {
+            // 真机基准: 没有播放列表就"无歌可切" —— 明确报出来, 而不是装作切过
+            return "播放列表为空(先 /media/playlist 或 /media/track), 切歌无效"
         }
+        plIndex = (plIndex + d + playlist.size) % playlist.size
+        applyIndex()
+        // 播放中: 换文件开播; 暂停中: 释放旧播放器(恢复时从新歌0s起), 避免挂着旧文件
+        if (playing) ensureAudioOut() else stopReal()
         pushMeta()
         pushState()
+        nudgeWhilePaused()
         return "切换 → ${trackDesc()}${realTag()}"
     }
 
@@ -228,10 +239,23 @@ object MediaEngine {
         val i = ((idx % playlist.size) + playlist.size) % playlist.size
         plIndex = i
         applyIndex()
-        if (playing) ensureAudioOut()
+        // 与 doAdvance 同一基准: 暂停中跳曲也要释放旧播放器, 否则 mp 仍绑旧文件
+        // (status/realTag 显示旧歌, FF/RW 的 seekTo 会打到旧文件上)
+        if (playing) ensureAudioOut() else stopReal()
         pushMeta()
         pushState()
+        nudgeWhilePaused()
         return "跳转 → ${trackDesc()}${realTag()}"
+    }
+
+    /**
+     * 部分车机栈在暂停态不主动刷新元数据显示(只认播放态变化) → 暂停中切歌/跳曲后
+     * 再补推两次元数据+状态。对外不可见(接收方只能看到最终状态), 属健壮性补丁。
+     */
+    private fun nudgeWhilePaused() {
+        if (playing) return
+        main.postDelayed({ if (!playing) { pushMeta(); pushState() } }, 600)
+        main.postDelayed({ if (!playing) { pushMeta(); pushState() } }, 1600)
     }
 
     // ---------------- 进度拖动(车机 AVRCP seek / PC 指令共用) ----------------
@@ -265,8 +289,15 @@ object MediaEngine {
         return "autoAdvance=$on"
     }
 
-    private fun applyIndex() {
-        val t = playlist[plIndex]
+    /** 把 playlist[plIndex] 就位为当前曲目(全部字段复位统一走 applyTrack) */
+    private fun applyIndex() = applyTrack(playlist[plIndex])
+
+    /**
+     * 换曲统一复位: doAdvance/jump/loadPlaylist 换曲目全走这里。
+     * seekAt/seekPosMs 必须清零 —— 它们是"最近一次 seek 的防回弹窗口"(1.5s),
+     * 真机基准: 切歌瞬间进度就是新歌 0s, 不能被上一首的 seek 窗口把进度闪回旧值。
+     */
+    private fun applyTrack(t: Track) {
         title = t.title
         artist = t.artist
         album = t.album
@@ -274,6 +305,8 @@ object MediaEngine {
         // (旧版清0 → 车机在切歌瞬间/暂停切歌时显示 00:00 总时长)
         durationSec = if (t.dur > 0) t.dur else maxOf(durationSec, 1)
         posSec = 0
+        seekAt = 0
+        seekPosMs = 0
     }
 
     private fun trackDesc() =
@@ -329,16 +362,7 @@ object MediaEngine {
                 EventLog.add(EventLog.MEDIA_TRACK_END, "app", "真实音频播完: ${f.name}")
                 // post 到主线程再推进: 在 onCompletion 回调里直接 release 自己会死锁/抛错
                 // (旧版startReal→stopReal→release 就发生在回调内 → "放完不播下一曲"的根因)
-                main.post {
-                    if (autoAdvance && playlist.size > 1) {
-                        doAdvance(+1)
-                    } else {
-                        playing = false
-                        posSec = durationSec
-                        pushState()
-                        stopTicker()   // 单曲结束停心跳, 否则时间乱跳
-                    }
-                }
+                main.post { handleTrackEnd() }
             }
             m.prepare()   // 本地文件同步 prepare, 快
             m.start()
@@ -423,27 +447,57 @@ object MediaEngine {
 
     private var ticker: Runnable? = null
 
+    /** 最近一次"播完处理"时刻: onCompletion 与心跳兜底可能先后到达, 2s 内去重防双切 */
+    private var lastEndAt = 0L
+
+    /**
+     * 曲目播完的统一处理(真实音频 onCompletion / 心跳兜底共用):
+     * 自动连播且还有别的曲目 → 切下一曲; 否则停尾(playing=false、进度钉在总时长、
+     * 停心跳、停静音流) —— 真机基准: 单曲/关连播时播完即停, 两种出声模式行为一致。
+     */
+    private fun handleTrackEnd() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastEndAt < 2000) return
+        lastEndAt = now
+        if (autoAdvance && playlist.size > 1) {
+            doAdvance(+1)
+        } else {
+            playing = false
+            posSec = durationSec
+            pushState()
+            stopTicker()   // 停心跳, 否则时间乱跳
+            stopSilence()  // 停尾与暂停同基准: 不留暂停态供流线程(见 doPause 注释)
+        }
+    }
+
     private fun startTicker() {
+        // 调用方全在主线程(Dispatcher.onMain/回调), ticker!=null 判断天然原子
         if (ticker != null) return
         val r = object : Runnable {
             override fun run() {
                 val m = mp
                 if (m != null) {
-                    // 真实模式: 进度取 MediaPlayer 实际位置(播完由 completion 回调处理);
-                    // 刚下发 seek 的窗口内播放器还可能报旧位置, 用命令值兜住
+                    // 真实模式: 进度取 MediaPlayer 实际位置; 刚下发 seek 的窗口内播放器
+                    // 还可能报旧位置, 用命令值兜住。播完主要靠 onCompletion, 这里加一道
+                    // 兜底(个别栈 seek 到精确结尾不回调 completion → 停在结尾"播放中")
                     posSec = try {
                         if (seekAt > 0 && System.currentTimeMillis() - seekAt < 1500)
                             (seekPosMs / 1000).toInt()
                         else m.currentPosition / 1000
                     } catch (_: Exception) { posSec }
+                    try {
+                        if (!m.isPlaying && durationSec > 0 && posSec >= durationSec)
+                            handleTrackEnd()
+                    } catch (_: Exception) {}
                 } else {
+                    // 静音流模式: 心跳自增; 播完走同一个 handleTrackEnd(与真实模式一致)
                     posSec++
-                    if (posSec >= durationSec) {
-                        if (autoAdvance && playlist.size > 1) doAdvance(+1) else posSec = 0
-                    }
+                    if (posSec >= durationSec) handleTrackEnd()
                 }
                 pushState()
-                main.postDelayed(this, 1000)
+                // handleTrackEnd 停尾路径会在本运行体内 stopTicker(ticker=null),
+                // 此时不能再自复活 —— 只在 ticker 仍指向自己时续期
+                if (ticker === this) main.postDelayed(this, 1000)
             }
         }
         ticker = r
@@ -475,7 +529,10 @@ object MediaEngine {
                     PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or
                         PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_SKIP_TO_NEXT or
                         PlaybackState.ACTION_SKIP_TO_PREVIOUS or PlaybackState.ACTION_SEEK_TO or
-                        PlaybackState.ACTION_STOP
+                        PlaybackState.ACTION_STOP or
+                        // FF/RW 回调已实现(onFastForward/onRewind)却不宣告的话,
+                        // 部分车机会把快进/快退键置灰 —— 真机播放器都宣告这两个能力
+                        PlaybackState.ACTION_FAST_FORWARD or PlaybackState.ACTION_REWIND
                 )
                 .setState(
                     if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
@@ -491,7 +548,10 @@ object MediaEngine {
     fun setSilence(on: Boolean): String {
         silenceWanted = on
         if (mp != null && on) return "静音流开关=$on (当前在放真实音频, 静音流不参与)"
-        if (on) resumeOrStartSilence() else stopSilence()
+        // 暂停态不起流: 孤儿暂停轨 + 路由消失 = write 忙循环刷爆 logcat(见 doPause 注释);
+        // 只记开关, 恢复播放时 ensureAudioOut 会按需建流
+        if (on && playing) resumeOrStartSilence() else if (on) return "静音流已开(播放后将保活A2DP)"
+        if (!on) stopSilence()
         return if (on) "静音流已开(保持A2DP活跃)" else "静音流已关"
     }
 
@@ -531,13 +591,26 @@ object MediaEngine {
             silenceThread = thread(isDaemon = true, name = "vphone-silence") {
                 val buf = ByteArray(rate * 2) // 1 秒 16bit 单声道全零 = 静音
                 var sec = 0
-                while (silenceWanted && audioTrack != null) {
+                var fastHits = 0   // 连续"瞬间返回"的写次数 —— 正常写应阻塞约 1s/次
+                // playing 由主线程写: 此处读到旧值最多多写一拍, 无害; 但绝不能在
+                // 暂停后继续供流(见 doPause 注释的忙循环事故)
+                while (silenceWanted && audioTrack != null && playing) {
                     try {
+                        val w0 = SystemClock.elapsedRealtime()
                         val n = audioTrack?.write(buf, 0, buf.size) ?: break
+                        val costMs = SystemClock.elapsedRealtime() - w0
                         if (n < 0) {
                             Log.w(CallEngine.TAG, "静音流写返回 $n, 线程退出")
                             break
                         }
+                        // 写 1s 数据却不阻塞: 输出路由已消失, 数据被直接丢弃 ——
+                        // 继续转只会烧 CPU + 刷爆 logcat, 立刻退出交给自愈逻辑
+                        if (costMs < 200) {
+                            if (++fastHits >= 5) {
+                                Log.w(CallEngine.TAG, "静音流写异常顺畅(${fastHits}次<200ms), 判定路由已失效, 退出供流")
+                                break
+                            }
+                        } else fastHits = 0
                         sec++
                         if (sec % 15 == 1)
                             Log.i(CallEngine.TAG, "静音流心跳 ${sec}s playState=${audioTrack?.playState}")
@@ -549,14 +622,19 @@ object MediaEngine {
                     }
                 }
                 if (silenceWanted) {
-                    // 意外退出(A2DP 建立瞬间路由切换等) → 自愈重建, 保证流不断
-                    Log.w(CallEngine.TAG, "静音流意外退出, 2s 后自动重建")
-                    main.postDelayed({
-                        if (silenceWanted && mp == null) {
-                            stopSilence()
-                            startSilence()
-                        }
-                    }, 2000)
+                    // 意外退出(A2DP 建立瞬间路由切换等) → 自愈重建, 保证流不断。
+                    // 必须带 playing 检查: 暂停中(doPause 已停流)不重建 —— 真机基准:
+                    // 暂停的播放器被系统中断后不该自己恢复出声, 否则车机看到
+                    // "状态是暂停、流却活跃"的矛盾画面
+                    if (playing) {
+                        Log.w(CallEngine.TAG, "静音流意外退出(播放中), 2s 后自动重建")
+                        main.postDelayed({
+                            if (silenceWanted && mp == null && playing) {
+                                stopSilence()
+                                startSilence()
+                            }
+                        }, 2000)
+                    }
                 }
             }
             Log.i(CallEngine.TAG, "静音流已启动(44.1kHz mono)")

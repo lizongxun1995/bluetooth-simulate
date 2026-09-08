@@ -5,6 +5,23 @@
 运行: python vphone_gui.py [--serial 手机序列号]
 功能: 媒体(门B: 元数据+电脑音频推车机)/电话(门C: 含通话自定义音频)/联系人(1w压测)/
       蓝牙扫描配对 全按钮化 + 实时结构化事件流(车机按键回流 CAR_*)。
+
+── 线程模型(改代码前必读) ─────────────────────────────────────────────
+· 主线程 = tkinter 主循环 + 一切控件读写。后台线程绝不直接碰控件:
+  Entry/Combobox/BooleanVar 的 .get() 看似无害, 但 tkinter 非线程安全,
+  跨线程调用偶发崩溃 —— 所有控件取值在提交任务前于主线程完成(闭包捕获值)。
+· 后台线程 = ThreadPoolExecutor(按钮动作) + _evt_poll/_stat_poll(轮询) +
+  lib 内 logcat 线程; 它们只通过 self.q 发消息, 由主线程 _drain() 消费。
+· _drain 消息协议(kind → payload → 主线程动作):
+    log   → str        → 事件窗追加一行
+    evt   → str        → logcat 原始行(兜底通道, 已滤 [事件# 重复)
+    tevt  → event dict → 结构化事件(🚗car/⌨cmd 高亮)
+    ready → VPhone     → 连接成功: 换 vp 引用+启动代际轮询+环境加固
+    connfail → str     → 连接失败提示
+    devs  → [dict]     → 蓝牙扫描结果回填列表
+    contacts/media/pos → 状态区刷新 / call → 主线程执行可调用对象
+· 轮询代际: 每次「连接」成功 _gen+1, 旧代 _evt_poll/_stat_poll 检测到代际
+  变化即退出 —— 重复点「连接」不会叠加轮询线程(否则事件双份/进度双刷)。
 """
 import argparse
 import os
@@ -35,6 +52,7 @@ class App:
         self.vp: VPhone | None = None
         self.bt_devs: list[dict] = []
         self._evt_stop = threading.Event()
+        self._gen = 0            # 连接代际: 每次连接成功 +1, 旧轮询线程见代际变化即退出
 
         self._build()
         root.after(100, self._drain)
@@ -160,6 +178,8 @@ class App:
         ttk.Label(r4b, text="(车机重连后显示新名)", foreground="#888").pack(side="left", padx=4)
         self.lb_bt = tk.Listbox(f3, height=5)
         self.lb_bt.pack(fill="both", expand=True, padx=4, pady=2)
+        # 双击扫描结果 = 配对(与扫描完成提示语一致, 之前只提示没绑定)
+        self.lb_bt.bind("<Double-Button-1>", lambda _e: self._bond_sel())
 
         # ---- 事件流 ----
         f4 = ttk.LabelFrame(body, text="事件流 (结构化 /events: 🚗=车机回流 ⌨=指令; CAR_*/BT_*/... 可断言)")
@@ -240,21 +260,31 @@ class App:
         self.pool.submit(task)
 
     def _push_track(self):
-        self._run(lambda: self.vp.set_track(
-            self.e_title.get(), self.e_artist.get(), self.e_album.get(),
-            int(self.e_dur.get() or 240)))
+        # 控件取值一律在主线程(提交前)完成, 闭包只带值 —— 后台线程不碰 tkinter
+        title, artist, album = (self.e_title.get(), self.e_artist.get(),
+                                self.e_album.get())
+        try:
+            dur = int(self.e_dur.get() or 240)
+        except ValueError:
+            self.log("!! 时长须为整数(秒)")
+            return
+        self._run(lambda: self.vp.set_track(title, artist, album, dur))
 
     def _incoming(self):
-        self._run(lambda: self.vp.incoming(self.e_num.get()))
+        num = self.e_num.get()
+        self._run(lambda: self.vp.incoming(num))
 
     def _dial(self):
-        self._run(lambda: self.vp.dial(self.e_num.get()))
+        num = self.e_num.get()
+        self._run(lambda: self.vp.dial(num))
 
     def _set_silence(self):
-        self._run(lambda: self.vp.silence(self.var_silence.get()))
+        on = self.var_silence.get()
+        self._run(lambda: self.vp.silence(on))
 
     def _set_auto_outgoing(self):
-        self._run(lambda: self.vp.set_auto_outgoing(self.var_autoout.get()))
+        on = self.var_autoout.get()
+        self._run(lambda: self.vp.set_auto_outgoing(on))
 
     def _pick_audio(self):
         """电脑上选音频文件 → 上传手机乐库 → 生成播放列表 → 播放(车机真实出声)。"""
@@ -291,7 +321,7 @@ class App:
 
         def cur_idx():
             try:
-                m = re.search(r"idx=(\d+)", self.vp.http("/media/status"))
+                m = re.search(r"idx=(\d+)", self.vp.media_status())
                 return int(m.group(1)) if m else 0
             except Exception:
                 return 0
@@ -318,14 +348,15 @@ class App:
             self.pool.submit(task)
 
         def push():
-            """整表回写手机, 并跳回当前曲目(回写会重置到第1首)。"""
+            """整表回写手机, 并跳回当前曲目(回写会重置到第1首)。
+            keep(当前曲目号)的查询也放后台 —— 按钮回调里做 HTTP 会冻结整个 GUI。"""
             lines = ["{}|{}|{}|{}|{}".format(
                 it["title"], it["artist"], it["album"], it["dur"], it.get("path") or "")
                 for it in pl_items]
-            keep = min(cur_idx(), max(len(pl_items) - 1, 0))
 
             def task():
                 try:
+                    keep = min(cur_idx(), max(len(pl_items) - 1, 0))
                     self.q.put(("log", self.vp.playlist(text="\n".join(lines))))
                     if pl_items:
                         self.q.put(("log", self.vp.media_jump(keep)))
@@ -434,10 +465,11 @@ class App:
 
     def _call_audio(self):
         name = self.cb_caudio.get().strip()
+        loop = self.var_caloop.get()
         if not name:
             self.log("!! 先在下拉框选一个音频(空则点「↻刷新」)")
             return
-        self._run(lambda: self.vp.call_audio(name, loop=self.var_caloop.get()))
+        self._run(lambda: self.vp.call_audio(name, loop=loop))
 
     def _refresh_caudio(self):
         """刷新通话音频下拉框(取手机乐库文件名)。"""
@@ -467,11 +499,13 @@ class App:
         v = int(self.scale_pos.get())
         self._run(lambda: self.vp.media_seek(v))
 
-    def _stat_poll(self):
-        """后台线程: 1s 刷新"当前曲目/时间"行 —— 车机切歌后 GUI 立即跟上。"""
-        while not self._evt_stop.is_set():
+    def _stat_poll(self, gen):
+        """后台线程: 1s 刷新"当前曲目/时间"行 —— 车机切歌后 GUI 立即跟上。
+        代际不符(用户重新点了「连接」)或连续失败(USB 断连)即自停。"""
+        fail = 0
+        while not self._evt_stop.is_set() and self._gen == gen:
             try:
-                s = self.vp.http("/media/status")
+                s = self.vp.media_status()
                 m = re.search(
                     r'media=(\w+) track="([^"]*)"/(\S*) pos=(\d+)s dur=(\d+)s '
                     r'playlist=(\d+)首 idx=(\d+)', s)
@@ -484,8 +518,12 @@ class App:
                         txt += f"  📄{real.group(1)}"
                     self.q.put(("media", txt))
                     self.q.put(("pos", (int(pos), int(dur))))
+                fail = 0
             except Exception:
-                pass
+                fail += 1
+                if fail >= 3:
+                    self.q.put(("log", "!! 状态轮询连续 3 次失败(USB断连?服务停了?) —— 已自停, 重新「连接」恢复"))
+                    return
             self._evt_stop.wait(1.0)
 
     def _contacts_load(self):
@@ -542,6 +580,10 @@ class App:
         self._run(lambda: self.vp.bt_allow_car(target))
 
     def _scan(self):
+        if self.vp is None:
+            self.log("!! 未连接")
+            return
+
         def task():
             try:
                 devs = self.vp.bt_scan()
@@ -549,7 +591,7 @@ class App:
                 self.q.put(("log", f"扫描完成: {len(devs)} 台(双击列表项=配对)"))
             except Exception as e:
                 self.q.put(("log", f"扫描失败: {e}"))
-        self._run(lambda: None) if self.vp is None else self.pool.submit(task)
+        self.pool.submit(task)
 
     def _sel_dev(self):
         sel = self.lb_bt.curselection()
@@ -569,21 +611,27 @@ class App:
             self._run(lambda: self.vp.bt_unpair(d["mac"]))
 
     # ---------- 事件轮询(结构化 /events) ----------
-    def _evt_poll(self):
-        """后台线程: /events 轮询 → 事件流窗口。车机回流(src=car)高亮。"""
+    def _evt_poll(self, gen):
+        """后台线程: /events 轮询 → 事件流窗口。车机回流(src=car)高亮。
+        首拉只对齐水位(只显示"今后"的事件); 代际不符或连续失败即自停。"""
         last = 0
         first = True
-        while not self._evt_stop.is_set():
+        fail = 0
+        while not self._evt_stop.is_set() and self._gen == gen:
             try:
                 r = self.vp.events(since=last)
                 last = r["last"]
+                fail = 0
                 if first:   # 首拉只对齐水位
                     first = False
                 else:
                     for e in r["events"]:
                         self.q.put(("tevt", e))
             except Exception:
-                pass
+                fail += 1
+                if fail >= 3:
+                    self.q.put(("log", "!! 事件轮询连续 3 次失败(USB断连?) —— 已自停, 重新「连接」恢复"))
+                    return
             self._evt_stop.wait(0.5)
 
     def _logcat_line(self, line):
@@ -609,7 +657,12 @@ class App:
                     tag = "car" if e["src"] == "car" else ("bt" if e["type"].startswith("BT_") else "cmd")
                     self.log(f'{mark} {ts} #{e["id"]} {e["type"]} {e["detail"]}', tag=tag)
                 elif kind == "ready":
-                    self.vp = payload
+                    old, self.vp = self.vp, payload
+                    if old is not None:
+                        try:
+                            old.stop_events()   # 停掉旧连接的 logcat 线程, 防重复行
+                        except Exception:
+                            pass
                     self.e_serial.delete(0, "end")
                     self.e_serial.insert(0, self.vp.serial or "")
                     self.lbl_conn.config(text=f"已连接 {self.vp.serial or '(单设备)'}",
@@ -622,8 +675,12 @@ class App:
                     self._run(self.vp.set_auto_outgoing(True))
                     self._contacts_refresh()
                     self._refresh_caudio()
-                    threading.Thread(target=self._evt_poll, daemon=True).start()
-                    threading.Thread(target=self._stat_poll, daemon=True).start()
+                    # 代际+1: 旧的 _evt_poll/_stat_poll 线程检测到后代不符即自退,
+                    # 不会叠加(重复「连接」曾经会叠出双份事件/双份进度刷新)
+                    self._gen += 1
+                    gen = self._gen
+                    threading.Thread(target=self._evt_poll, args=(gen,), daemon=True).start()
+                    threading.Thread(target=self._stat_poll, args=(gen,), daemon=True).start()
                 elif kind == "connfail":
                     self.lbl_conn.config(text="连接失败", foreground="#c22")
                     self.log("!! 连接失败: " + payload)

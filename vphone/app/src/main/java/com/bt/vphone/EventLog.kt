@@ -8,7 +8,7 @@ import android.util.Log
  * PC 侧经 /events?since=N 拉取 JSON 做断言(wait_event), 不再依赖解析 logcat 文本。
  *
  * 事件三要素: type(英文稳定, 断言用) / src(来源) / detail(中文, 人读)。
- *   src: car=车机按键回流  cmd=PC 指令  app=App 内部状态  bt=蓝牙链路
+ *   src: car=车机按键回流  cmd=PC 指令  app=App 内部状态  bt=蓝牙链路  sys=系统(Telecom)侧
  * 环形缓冲 500 条, logcat 同步打一行(TAG=VPhone), 广播 EVT_ACTION 同步发。
  */
 object EventLog {
@@ -30,11 +30,13 @@ object EventLog {
     /** 呼叫状态机 */ const val RING_IN = "RING_IN"; const val CALL_ACTIVE = "CALL_ACTIVE"
     const val CALL_HELD = "CALL_HELD"; const val CALL_ENDED = "CALL_ENDED"
     /** 媒体/音频 */ const val CMD_PLAY = "CMD_PLAY"; const val CMD_PAUSE = "CMD_PAUSE"
+    const val CMD_NEXT = "CMD_NEXT"; const val CMD_PREV = "CMD_PREV"
     const val MEDIA_TRACK_END = "MEDIA_TRACK_END"; const val MEDIA_UPLOAD = "MEDIA_UPLOAD"
     const val CALL_AUDIO_END = "CALL_AUDIO_END"
     /** 蓝牙链路 */ const val BT_ACL_CONNECTED = "BT_ACL_CONNECTED"
     const val BT_ACL_DISCONNECTED = "BT_ACL_DISCONNECTED"
     const val BT_DISCONNECT = "BT_DISCONNECT"
+    const val BT_DISCONNECT_FAILED = "BT_DISCONNECT_FAILED"
     const val BT_A2DP_CONNECTED = "BT_A2DP_CONNECTED"
     const val BT_A2DP_DISCONNECTED = "BT_A2DP_DISCONNECTED"
     const val BT_HFP_CONNECTED = "BT_HFP_CONNECTED"

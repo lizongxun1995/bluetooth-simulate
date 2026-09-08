@@ -20,16 +20,12 @@ class ControlReceiver : BroadcastReceiver() {
         MediaEngine.init(context)
         MediaEngine.start()
         VPhoneService.ensureStarted(context)
-        val q = mapOf(
-            "number" to (intent.getStringExtra("number") ?: ""),
-            "key" to (intent.getStringExtra("key") ?: ""),
-            "on" to (intent.getStringExtra("on") ?: ""),
-            "title" to (intent.getStringExtra("title") ?: ""),
-            "artist" to (intent.getStringExtra("artist") ?: ""),
-            "album" to (intent.getStringExtra("album") ?: ""),
-            "duration" to (intent.getStringExtra("duration") ?: ""),
-            "text" to (intent.getStringExtra("text") ?: "")
-        )
+        // 全量透传 string extras: 早期白名单只转 8 个参数, 广播通道下
+        // mac/name(bond/unpair/disconnect)、pos(seek)、idx(jump)、count(contacts_load)
+        // 全都拿不到值(或被路由默认值静默带偏)。非 string extra 忽略。
+        val q = mutableMapOf<String, String>()
+        val extras = intent.extras
+        if (extras != null) for (k in extras.keySet()) extras.getString(k)?.let { q[k] = it }
         val result = Dispatcher.cmd(cmd, q)
         Log.i(CallEngine.TAG, "[adb] $cmd → $result")
     }

@@ -18,10 +18,14 @@
   python vphone_ctl.py contacts-load --count 10000  # 批量1w联系人(车机通讯录压测)
   python vphone_ctl.py contacts-file --file 联系人.txt   # 自定义联系人(姓名|号码/行)
   python vphone_ctl.py contacts-count / contacts-clear
-  python vphone_ctl.py bt-state / scan / bond --mac CARKIT-1 / unpair --mac CARKIT-2
+  python vphone_ctl.py bt-state / scan / scan-result / bond --mac CARKIT-1 / unpair --mac CARKIT-2
   python vphone_ctl.py reconnect --mac CARKIT-1            # 断线重连(A2DP+HFP)
+  python vphone_ctl.py allow-car                      # 授权车机拉通讯录(PBAP)
   python vphone_ctl.py enable-autoconfirm             # 配对弹窗自动点(无障碍, 一次性)
-  python vphone_ctl.py install [apk路径]              # 更新APK并自动拉起服务
+  python vphone_ctl.py install [apk路径]              # 更新APK并自动拉起服务(缺省取 vphone/apk/)
+  python vphone_ctl.py launch                         # 拉起App界面+服务(装完 stopped 态必备)
+  python vphone_ctl.py media-diag                     # 音质/断续排查(实际输出设备+SCO占用)
+  python vphone_ctl.py playlist-get                   # 查询当前播放列表
   python vphone_ctl.py events                       # 实时结构化事件流(Ctrl+C 退出)
   python vphone_ctl.py wait-event CAR_HANGUP --timeout 30   # 断言等待车机回流事件
 
@@ -39,12 +43,15 @@ def main():
     ap.add_argument("--serial", help="手机序列号(多设备时必填)")
     ap.add_argument("--base", help="直连模式: http://<手机IP>:8800 (默认 adb forward)")
     ap.add_argument("--port", type=int, default=18800, help="PC 侧本地端口(默认 18800)")
-    ap.add_argument("cmd", help="start|grant-perms|enable-account|status|incoming|dial|answer|"
-                                "hangup|hold|dtmf|audio-bt|call-audio|track|play|pause|next|prev|"
-                                "jump|seek|silence|autoadvance|playlist|upload|files|del|play-audio|"
+    ap.add_argument("cmd", help="start|grant-perms|enable-account|status|launch|install|events|"
+                                "wait-event|"
+                                "incoming|dial|answer|hangup|hold|dtmf|audio-bt|call-audio|"
+                                "call-audio-stop|auto-outgoing|"
+                                "track|play|pause|next|prev|jump|seek|silence|autoadvance|"
+                                "playlist|playlist-get|upload|files|del|play-audio|media-diag|"
                                 "contacts-load|contacts-file|contacts-clear|contacts-count|"
-                                "bt-state|bt-name|scan|bond|unpair|disconnect|bt-enable|reconnect|events|"
-                                "wait-event|install")
+                                "bt-state|bt-name|bt-enable|scan|scan-result|bond|unpair|"
+                                "disconnect|reconnect|allow-car|enable-autoconfirm")
     ap.add_argument("rest", nargs="*", help="位置参数(如 upload/play-audio 的文件列表)")
     ap.add_argument("--num")
     ap.add_argument("--mac", help="bond/unpair 目标: MAC 或名字片段")
@@ -92,11 +99,12 @@ def main():
                 pass
         elif c == "wait-event":
             types = tuple(args.rest) or None
-            e = vp.wait_event(type=types, detail=args.detail, timeout=args.timeout)
+            e = vp.wait_event(evt_type=types, detail=args.detail, timeout=args.timeout)
             if e:
                 print(f'✓ #{e["id"]} {e["type"]} ({e["src"]}) {e["detail"]}')
             else:
                 sys.exit(f"!! 超时 {args.timeout}s 未等到事件 {types or '(任意)'}")
+        # ---------- 部署/生命周期 ----------
         elif c == "start":
             print(vp.start())
         elif c == "grant-perms":
@@ -105,6 +113,7 @@ def main():
             print(vp.enable_account())
         elif c == "status":
             print(vp.status())
+        # ---------- 电话(门C) ----------
         elif c == "incoming":
             print(vp.incoming(args.num or "13800138000"))
         elif c == "dial":
@@ -125,6 +134,7 @@ def main():
             print(vp.call_audio(args.name, loop=args.loop))
         elif c == "call-audio-stop":
             print(vp.call_audio_stop())
+        # ---------- 媒体(门B) ----------
         elif c == "track":
             print(vp.set_track(args.title or "", args.artist or "",
                                args.album or "", args.dur or 240))
@@ -142,6 +152,12 @@ def main():
             print(vp.autoadvance(args.on != "0"))
         elif c == "playlist":
             print(vp.playlist(text=args.text, file=args.file))   # 无参=查询当前列表
+        elif c == "playlist-get":
+            for i, it in enumerate(vp.playlist_get()):
+                f = f"  📄{it['path']}" if it["path"] else ""
+                print(f"{i}. {it['title']} | {it['artist']} | {it['dur']}s{f}")
+        elif c == "media-diag":
+            print(vp.media_diag())
         elif c == "jump":
             if not args.rest:
                 sys.exit("!! 用法: jump <序号从0起>")
@@ -169,6 +185,7 @@ def main():
             if not args.rest and not args.file:
                 sys.exit("!! play-audio 需要音频文件路径(位置参数或 --file)")
             print(vp.play_audio_files([args.file] if args.file else args.rest))
+        # ---------- 联系人(PBAP) ----------
         elif c == "contacts-load":
             print(vp.contacts_load(args.count, prefix=args.prefix))
         elif c == "contacts-file":
@@ -179,6 +196,7 @@ def main():
             print(vp.contacts_clear())
         elif c == "contacts-count":
             print(vp.contacts_count())
+        # ---------- 蓝牙 ----------
         elif c == "bt-state":
             print(vp.bt_state())
         elif c == "scan":
@@ -204,10 +222,14 @@ def main():
             print(vp.bt_allow_car(args.mac))
         elif c == "auto-outgoing":
             print(vp.set_auto_outgoing(args.on != "0"))
+        # ---------- 部署 ----------
         elif c == "enable-autoconfirm":
             print(vp.enable_autoconfirm())
+        elif c == "launch":
+            print(vp.launch())
         elif c == "install":
-            print(vp.install(args.file))
+            # docstring 写"install [apk路径]": 位置参数与 --file 都认, 都不给=自动找默认包
+            print(vp.install(args.rest[0] if args.rest else args.file))
         else:
             sys.exit(f"!! 未知命令 {c}")
     except VPhoneError as e:

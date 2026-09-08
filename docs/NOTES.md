@@ -770,3 +770,58 @@ adb install -r + 自动 am start + 重 forward + 拉服务（手机弹窗仍需�
    `SetServiceState(false)` 让系统栈放手，再重试连接。（SO#14534722 同类。）
 3. **CallControl.GetDefault()=null**：结构性缺口，Windows 无 HFP AG 服务端/电话设备模型，
    **不可模拟**（COD 注册表只换外衣救不了它）——门C ✗ 已定案，正是转 vphone 路线的主因。
+
+---
+
+## 六、第六轮（稳固轮）—— 真机保真度为准绳的状态机理顺 + 全量注释 + 文档 — 2026-09-08
+
+**准绳**：协议层本来就是 EMUI 真栈，模拟的是内容源（播放器/拨号器 App）→ "接近真机"
+= 应用层状态机对齐成熟播放器/拨号器语义。产出 TECH 文档里的「真机行为基准表」（T1-T9
+PC 回归全过）和「与真机已知偏差清单」（无 SIM 信号电量 / EMUI 丢 FF/RW 键 / 暂停切歌
+待车机裁决 / 静音流模式 / PBAP 手动授权），测试有效性边界从此有据可查。
+
+### Kotlin（跨线程 + 状态机）
+- **Dispatcher.onMain{} 主线程同步桥**（post+CountDownLatch 8s 超时）：HTTP worker 直改
+  引擎状态是双 ticker（进度双倍速）/双 MediaPlayer（两路同播）/seek-release 竞争的根因。
+  BtEngine 不上桥（bond 阻塞数秒会 ANR），其 pause 副作用 post 回主线程。
+- **applyTrack() 统一换曲入口**：doAdvance/jump/loadPlaylist/setTrack 共用，重置元数据/进度
+  **并清 seekAt/seekPosMs**（1.5s 防回弹窗口不跨曲——seek 后切歌进度闪回旧值的根因）。
+- **handleTrackEnd() 统一播完入口**：onCompletion 与心跳兜底 2s 去重（lastEndAt）；
+  停尾语义（playing=false/进度钉尾/停心跳/停流）两模式一致——真机基准：播完即停不循环。
+- 暂停跳曲释放旧 MediaPlayer；actions 掩码补 FF/RW 宣告；暂停态切歌后 0.6s/1.6s 补推两次
+  元数据（对付暂停态不刷新的车机栈）；空列表切歌明确报错；jump/seek 缺参报错不静默跳 0。
+- CallEngine：onAbort(系统拆线)归零、注入来电 1.5s 未生效回滚 idle、挂断清
+  number/pending/CallAudio。ContactsEngine AtomicBoolean CAS 防并发双写。
+- BtEngine 断开未成功如实记 BT_DISCONNECT_FAILED（断言不再误判）；ControlReceiver extras
+  全透传（广播通道此前拿不到 mac/pos/count）。
+
+### 重大事故：静音流供流线程忙循环（本轮最有价值发现）
+- 现象：VPhone 标签 logcat 16 万行/s 刷「静音流心跳」，进程 100% CPU（烧 30+ 分钟），
+  并发第二条 logcat 流 read: unexpected EOF!，广播兜底取结果（-t 30）全被垃圾淹没。
+- 根因链：doPause 只 audioTrack.pause() 留着供流线程（阻塞在 write 等排空）→ A2DP 路由
+  消失后系统瞬间丢缓冲，write() 退化成"立即返回+丢弃"忙循环（佐证：playState=2 PAUSED
+  孤儿轨、posSec 每行 +15）→ 每 15 次写一行心跳刷爆。
+- 修复（三重独立退出，不依赖跨线程字段可见性）：暂停/播完彻底 stopSilence()（真机基准：
+  暂停的播放器没有活跃流）；供流线程连续 5 次 write<200ms 判路由失效即退；setSilence(true)
+  暂停态不起流。验证：播放 CPU 0.0% 心跳 1 条/15s；暂停 silence=off 无刷屏；双并发流 45/45
+  行共存；Python 重连场景新旧流交接正常。
+
+### Python
+- lib：start_events 不再清 on_event（GUI logcat 通道死代码）；_adb 默认 30s 超时（构造函数
+  永挂根因）+ devices/forward 10s；http() raise from 保留原始异常 + timeout 可配；
+  broadcast() 查 returncode；bt_scan 超时告警；MAC 改正则抠取（行尾 [HFP已连] 标记会让按
+  空格取末段取错）；upload_audio 超时按体积放宽（固定 120s 会掐断大文件）；_setup_forward
+  幂等（--list 已有同口跳过，重复 rebind 会让 adb server 短暂拒接新连接）；wait_event 参数
+  type→evt_type + since 水位语义写明；全部公开方法补 docstring + cmd() 双通道契约矩阵。
+- GUI：连接代际 _gen（重复「连接」曾叠加轮询线程→事件双份）；控件取值全改主线程提交前
+  完成（tkinter 非线程安全）；播放列表 push() 的 cur_idx HTTP 移出主线程（按钮回调里做
+  HTTP 冻结整个 GUI）；轮询连续 3 次失败自停并提示一次；双击扫描项真正绑配对；模块头
+  线程模型 + _drain 消息协议表。注：沙箱会话 Text.see() 假死是环境假象，渲染层待人工回归。
+- ctl：install 认位置参数与 --file；help 同步；新增 launch/media-diag/playlist-get。
+
+### 文档与发布
+- 新增 docs/vphone-TECH.md（架构/线程模型/事故记录/基准表/偏差清单）、vphone-API.md
+  （HTTP/Python/CLI/事件/断言）、vphone-DEV.md（任务跟进/挂账/车机侧验收清单/更新规则）。
+  根 README 改 vphone 主力。APK 同步 apk/vphone.apk，exe 重建（13MB 内嵌新 APK）。
+- 部署铁律（本轮确认）：华为 adb 安装可能每次都弹确认框，卡住不慌、等人到手机旁手动点，
+  不反复重试；设备必须挂 hub；重装后内存态（播放列表等）复位需重建，乐库/联系人通常保留。

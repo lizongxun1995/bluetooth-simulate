@@ -1,83 +1,72 @@
-# bluetooth-simulate — 蓝牙车机模拟测试工具
+# bluetooth-simulate — 车载蓝牙自动化测试框架
 
-用一块**原版 ESP32**(ESP32-D0WDQ6/WROOM-32,双模经典蓝牙)开发板充当
-"脚本全控的虚拟手机",连接车机后,从电脑侧用 Python 脚本/CLI 完成车载蓝牙
-测试的常用操作,替代"人手一部手机"。
+**当前主力路线是 vphone**：一台普通 Android 手机装上 vphone APK 后，成为 PC 可远程驱动的
+蓝牙测试终端——车机看到的 A2DP/HFP/AVRCP/PBAP 对端就是一台真手机（协议层就是手机自带
+厂商栈），但播放内容、来电、联系人、配对动作全部由 PC 脚本控制，替代"人手一部手机"。
 
-## 能力一览
+> ESP32 路线（btphone/）为本仓库一期工程，保留作信令级参考；因协议栈与真机差距大，
+> 已由 vphone 路线接替（决策记录见 docs/NOTES.md）。Windows 蓝牙路线（btwinrt）因
+> 系统无 HFP AG 能力定案放弃。
+
+## vphone 能力一览
 
 | 能力 | 说明 | 状态 |
 |---|---|---|
-| 配对全流程控制 | 自动/手动确认,**配对失败模拟**(拒绝/错PIN/超时),解绑/回连 | v1 |
-| 音乐(A2DP) | 电脑曲库经 Type-C 实时推流给车机,MP3/WAV 自动转码 | v1 |
-| 曲目信息(AVRCP) | 推送歌名/歌手/专辑;车机上按上下首/暂停联动 | v1 |
-| 通话(HFP AG) | 模拟来电/拨号/接听/挂断/DTMF/通话中语音 | v1(信令级) |
-| 主动连接 | PC 按 MAC 主动连车机;断开任意协议 | v1 |
-| 歌词推送 | 标准蓝牙无此协议;按调研结论实现 | P3(先调研) |
-| WiFi 共存/网络共享 | 车机走电脑网络(热点+NAT / BT PAN) | P2 |
-| 通讯录/短信(PBAP/MAP) | 车机同步联系人/短信 | P4(可裁剪) |
+| 配对全流程控制 | 扫描/配对不出 App，配对弹窗自动确认，解绑/断连/回连 | ✅ 台架全通 |
+| 音乐(A2DP/AVRCP) | 元数据任意伪造；电脑音频上传→车机真实出声；静音流保活模式 | ✅ |
+| 车机按键回流 | 播放/暂停/切歌/拖进度/接听/挂断/拨号 全部落结构化事件可断言 | ✅ |
+| 通话(HFP) | 注入来电/拨号/保持/DTMF/通话中自定义音频(对端说话) | ✅ |
+| 通讯录(PBAP) | 批量 1 万/自定义联系人写入 → 车机通讯录压测 | ✅ |
+| 断连/回连测试 | 保配对断开、手机侧回连，ACL/A2DP/HFP 链路事件断言 | ✅ |
+| 发布 | 单文件 exe（内嵌 APK+adb），换机器双击即用 | ✅ |
 
-> 为什么不能直接用电脑蓝牙?Windows 蓝牙栈只开放"消费端"角色(把车机当音箱),
-> 不支持模拟手机的 AG/AVRCP 角色。ESP32(原版双模)的 Bluedroid 协议栈全部可控。
-
-## 快速开始
+## 快速开始（vphone）
 
 ```bash
-pip install -e .            # PC 侧库 + CLI
-
-# 无硬件,先跑通流程(内置固件模拟器)
-python examples/01_music_and_meta.py --sim
-btphone-cli --sim
+# 换机器免装版: vphone/dist/vphone_gui.exe 双击（唯一前提=手机 USB 驱动）
+# 开发机:
+cd vphone
+python vphone_ctl.py --serial <手机序列号> install   # 装机并拉起服务(华为可能要点安装确认)
+python vphone_gui.py --serial <手机序列号>            # 图形控制台
 ```
 
-硬件到手后(烧录见 docs/DEPLOY.md):
+测试脚本（推荐入口 `vphone/vphone_lib.py`）：
 
 ```python
-from btphone import BtPhone
+from vphone_lib import VPhone
+vp = VPhone(serial="SN_PHONE_A")
 
-phone = BtPhone("COM3")
-phone.set_name("VPHONE-01")
-phone.set_discoverable(True, timeout_s=60)
+vp.incoming("13800138000")                          # 注入来电(车机+手机同时响)
+assert vp.wait_event("CAR_ANSWER", timeout=15)      # 有人在车机上按了接听
+vp.hangup()
 
-# 车机上搜索配对后…
-phone.music.play(files=[r"D:\曲库\a.mp3", r"D:\曲库\b.mp3"], loop=True)
-phone.wait_event("hfp.at", predicate=lambda d: d.get("at") == "ATA", timeout=30)
-phone.calls.incoming("13800138000")   # 模拟来电
-phone.calls.hangup()
+vp.play_audio_files(["D:/music/a.mp3"])             # 上传+播放(车机真出声)
+assert vp.wait_event(("CAR_NEXT", "CAR_PREV"), timeout=15)
+
+vp.contacts_load(10000)                             # 1w 联系人→车机通讯录压测
 ```
-
-自动化测试里对车机行为做断言:车机上按"下一首"会收到 `avrcp.cmd {"cmd":"next"}`
-事件;车机接听来电会收到 `hfp.at {"at":"ATA"}`;配对失败会收到
-`pair.result {"ok":false,"reason":"rejected|wrong_pin|timeout"}`。
 
 ## 目录结构
 
 ```
-btphone/        Python 库(BtPhone API / 串口传输 / 事件总线 / 模拟器 / CLI / 图形控制台)
-firmware/       ESP-IDF v5.x 固件工程(A2DP+AVRCP+HFP AG+音频管线+WiFi)
-tests/          pytest 套件(35 用例,协议/编解码/全流程/GUI 冒烟,基于模拟器)
-examples/       示例脚本(音乐元数据/配对失败/通话全流程)
-tools/          板卡自检 / btsnoop 歌词调研分析 / 测试音频生成
-docs/           部署 / 协议 / 歌词调研SOP / 硬件联调清单
+vphone/          主力工程: APK( Kotlin) + Python(lib/CLI/GUI) + build_exe.py + apk/(发行包)
+docs/            vphone-TECH/API/DEV 三文档 + ESP32 时代文档(DEPLOY/PROTOCOL/...) + NOTES(全轮次日志)
+btphone/         一期 ESP32 Python 库(保留参考)
+firmware/        一期 ESP-IDF 固件工程(保留参考)
+tests/ examples/ tools/    一期测试/示例/工具
+资料/            (不入库)
 ```
 
 ## 文档
 
-- [部署指南](docs/DEPLOY.md) — 硬件选型、固件烧录、PC 安装、常见问题
-- [串口协议参考](docs/PROTOCOL.md) — 全部命令/事件/帧格式/ADPCM 格式
-- [歌词来源调研 SOP](docs/LYRICS_RESEARCH.md) — Phase 0 抓包与分析方法
-- [硬件联调清单](docs/BRINGUP.md) — 首次编译/上电检查与 IDF 兼容性风险点
-
-## 硬件采购要点(唯一但要命的坑)
-
-- ✅ 模组丝印 **ESP32-WROOM-32**(芯片 ESP32-D0WDQ6/D0WD)——原版双模
-- ❌ ESP32-**S3/C3/C6/H2** —— 只有低功耗蓝牙,本项目完全不可用
-- 板子其他方面随意:Type-C 优先、CH340 串口、排针已焊接、4MB Flash
+- [vphone 技术文档](docs/vphone-TECH.md) — 架构/线程模型/双控制面/事故记录/**真机行为基准表**/**与真机已知偏差清单**
+- [vphone 接口文档](docs/vphone-API.md) — HTTP 全端点 / Python API / CLI / 事件总表 / 断言示例
+- [vphone 开发文档](docs/vphone-DEV.md) — 任务跟进 / 挂账项 / 车机侧验收清单 / 构建发布流程
+- 一期文档: [部署](docs/DEPLOY.md) [串口协议](docs/PROTOCOL.md) [歌词调研](docs/LYRICS_RESEARCH.md) [硬件联调](docs/BRINGUP.md) [交接](docs/HANDOFF.md)
 
 ## 当前状态与路线
 
-- ✅ v1(本仓库):PC 库 + CLI + 模拟器 + 测试套件;固件源码完整,待硬件到手联调
-- ⏳ P0:歌词来源调研(docs/LYRICS_RESEARCH.md)+ hfp_ag spike(docs/BRINGUP.md)
-- ⏳ P2:WiFi 热点+NAT 网络共享、BT PAN spike
-- ⏳ P3:歌词推送(视调研结论)
-- ⏳ P4:PBAP/MAP 通讯录短信
+- ✅ vphone 台架全通（配对/音乐/来电/通讯录/断连回连/exe 发布），第六轮稳固轮完成
+  （跨线程同步桥、状态机对齐真机语义、静音流忙循环事故修复、全量注释与文档）
+- ⏳ 车机侧保真度验收（暂停态切歌裁决 / CAR_SEEK / 杂音对照 / 真手机差分对照）——见 DEV 文档清单
+- 挂账轻微项与更新规则见 [vphone-DEV.md](docs/vphone-DEV.md)

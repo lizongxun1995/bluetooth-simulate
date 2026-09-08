@@ -59,9 +59,11 @@ def default_apk():
     return b if os.path.isfile(b) else None
 
 
-# 短名 → HTTP 路径(与 APK Dispatcher 路由对齐; 短名同时用于广播别名)
+# 短名 → HTTP 路径(与 APK Dispatcher 路由对齐; 短名同时用于广播别名)。
+# 分组: 电话(门C) / 媒体(门B) / 蓝牙 / 联系人 / 系统。改路由要同时改 APK Dispatcher。
 PATHS = {
     "status": "/status",
+    # ---- 电话(门C) ----
     "incoming": "/call/incoming",
     "dial": "/call/dial",
     "answer": "/call/answer",
@@ -71,19 +73,23 @@ PATHS = {
     "audio_bt": "/call/audio-bt",
     "auto_outgoing": "/call/auto-outgoing",
     "call_audio": "/call/audio",
+    # ---- 媒体(门B) ----
     "track": "/media/track",
     "play": "/media/play",
     "pause": "/media/pause",
     "next": "/media/next",
     "prev": "/media/prev",
+    "media_status": "/media/status",   # GUI 进度轮询用(输出一行 key=value 文本)
     "silence": "/media/silence",
     "autoadvance": "/media/autoadvance",
     "playlist": "/media/playlist",
     "jump": "/media/jump",
     "seek": "/media/seek",
+    "media_upload": "/media/upload",   # 仅 http_post 直达(二进制 POST, 无广播形态)
     "files": "/media/files",
     "diag": "/media/diag",
     "del": "/media/del",
+    # ---- 蓝牙 ----
     "bt_state": "/bt/state",
     "scan": "/bt/scan",
     "scan_result": "/bt/scan-result",
@@ -94,12 +100,14 @@ PATHS = {
     "allow_car": "/bt/allow-car",
     "bt_name": "/bt/name",
     "bt_enable": "/bt/enable",
+    # ---- 联系人 ----
     "contacts_load": "/contacts/load",
     "contacts_import": "/contacts/import",
     "contacts_clear": "/contacts/clear",
     "contacts_count": "/contacts/count",
     "contacts_status": "/contacts/status",
-    "events": "/events",
+    # ---- 系统 ----
+    "events": "/events",              # 仅 HTTP(JSON 拉取, 无广播形态)
 }
 
 
@@ -116,7 +124,10 @@ def _bundle_dirs():
 
 
 def _find_adb(adb="adb"):
-    # 打包成 exe 时优先用内嵌的 adb(先于系统 PATH, 版本可控)
+    """定位 adb.exe: 调用方显式传的可执行路径 → exe 内嵌(版本可控, 换机器免装)
+    → LOCALAPPDATA SDK → 交给 PATH。"""
+    if adb != "adb" and os.path.isfile(adb):
+        return adb
     for d in _bundle_dirs():
         cand = os.path.join(d, "adb.exe")
         if os.path.isfile(cand):
@@ -151,15 +162,28 @@ class VPhone:
 
     # ================= 底层 =================
 
-    def _adb(self, *args, timeout=None):
+    def _adb(self, *args, timeout=30):
+        """执行一条 adb 命令, 返回 CompletedProcess。
+        默认 30s 超时 —— 无超时的话 adb/USB 卡死会把构造函数、乃至整个 GUI 永久挂起。
+        超时抛 VPhoneError(install 等需要区分超时的调用方自行捕获)。"""
         cmd = [self.adb_path] + (["-s", self.serial] if self.serial else []) + list(args)
-        return subprocess.run(cmd, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout)
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            raise VPhoneError(
+                f"adb {' '.join(a for a in args[:4])} 超时({timeout}s): 设备掉线/USB异常?") from e
 
     def _pick_serial(self):
-        out = self._adb("devices").stdout
-        serials = [l.split()[0] for l in out.splitlines()
-                   if l.strip() and not l.startswith("List") and l.split()[-1] == "device"]
+        """自动选目标手机: 恰好一台在线 → 直接用; 多台 → 读环境变量 VPHONE_SERIAL。
+        注意: 有设备但 unauthorized/offline 时不在此列 —— 报错里提示看手机授权弹窗。"""
+        out = self._adb("devices", timeout=10).stdout
+        all_lines = [l for l in out.splitlines()
+                     if l.strip() and not l.startswith("List") and l.split()]
+        serials = [l.split()[0] for l in all_lines if l.split()[-1] == "device"]
+        if not serials and all_lines:
+            states = "; ".join(f"{l.split()[0]}={l.split()[-1]}" for l in all_lines)
+            raise VPhoneError(f"设备在线但不可用({states}): 手机上确认 USB 调试授权弹窗")
         if len(serials) == 1:
             return serials[0]
         env = os.environ.get("VPHONE_SERIAL")
@@ -169,28 +193,41 @@ class VPhone:
             f"需要指定手机序列号 --serial(手机, 不是车机): {', '.join(serials) or '无设备'}")
 
     def _setup_forward(self):
-        r = self._adb("forward", f"tcp:{self._port}", f"tcp:{REMOTE_PORT}")
+        """建 adb forward(本机 port → 手机 8800), USB 控制通道的前提。
+        幂等: 本设备该端口已转发就跳过 —— 重复 rebind 会让 adb server 短暂拒接新连接,
+        紧随其后创建的 logcat 流直接 "read: unexpected EOF!" 死掉(GUI 重连场景实测),
+        表现为重连后 logcat 事件通道假死。"""
+        listed = self._adb("forward", "--list", timeout=10).stdout
+        for line in listed.splitlines():
+            parts = line.split()
+            if (len(parts) >= 3 and parts[0] == self.serial
+                    and parts[1] == f"tcp:{self._port}"):
+                self._forward_ok = True
+                return
+        r = self._adb("forward", f"tcp:{self._port}", f"tcp:{REMOTE_PORT}", timeout=10)
         if r.returncode != 0:
             raise VPhoneError(f"adb forward 失败: {r.stderr.strip()}")
         self._forward_ok = True
 
     @property
     def base(self):
+        """控制面基地址: 直连 WiFi 时为传入的 base, 否则走 adb forward 本机端口。"""
         return self._base or f"http://127.0.0.1:{self._port}"
 
-    def http(self, path, **params) -> str:
-        """HTTP 直连手机控制面(纯文本结果); 失败抛 VPhoneError。"""
+    def http(self, path, timeout=6, **params) -> str:
+        """HTTP 直连手机控制面, 返回纯文本结果; 失败抛 VPhoneError(保留原始异常)。
+        仅此方法+http_post 走 HTTP —— 无广播兜底(见 cmd() 的双通道契约)。"""
         url = self.base + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
         try:
-            with urllib.request.urlopen(url, timeout=6) as r:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
                 return r.read().decode("utf-8")
         except Exception as e:
-            raise VPhoneError(f"HTTP 不通: {e} (服务起了吗? adb forward 通吗?)")
+            raise VPhoneError(f"HTTP 不通[{path}]: {e} (服务起了吗? adb forward 通吗?)") from e
 
     def http_post(self, path, data: bytes, timeout=120, **params) -> str:
-        """POST 二进制体(/media/upload 推音频用)。"""
+        """POST 二进制体(/media/upload 推音频用); 失败抛 VPhoneError。"""
         url = self.base + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -199,16 +236,21 @@ class VPhone:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read().decode("utf-8")
         except Exception as e:
-            raise VPhoneError(f"HTTP POST 不通: {e}")
+            raise VPhoneError(f"HTTP POST 不通[{path}]: {e}") from e
 
     def broadcast(self, cmd, **params) -> str:
         """显式广播兜底通道(必须 -p 指定包: Android 8+ 隐式广播收不到)。
-        广播无返回值, 结果取 logcat 最新 [adb] 行。"""
+        广播无返回值 → 发出后睡 1.2s, 从 logcat 最新 [adb] 行取结果。
+        已知竞态: 若 1.2s 内 App 未写日志, 可能取到上一条命令的 [adb] 行
+        (主线 HTTP 同步返回无此问题, 此通道仅为兜底)。adb 层失败直接抛 VPhoneError。"""
         args = ["shell", "am", "broadcast", "-a", f"{PKG}.CMD", "-p", PKG,
                 "--es", "cmd", cmd]
         for k, v in params.items():
             args += ["--es", k, str(v)]
-        self._adb(*args, timeout=15)
+        r = self._adb(*args, timeout=15)
+        if r.returncode != 0:
+            raise VPhoneError(
+                f"广播发送失败[{cmd}]: {(r.stderr or r.stdout).strip()[:200]}")
         time.sleep(1.2)
         out = self._adb("logcat", "-d", "-s", "VPhone", "-t", "30", timeout=15).stdout
         for line in reversed(out.splitlines()):
@@ -217,7 +259,14 @@ class VPhone:
         return "(广播已发但无 [adb] 日志: App 可能处于 stopped 态, 先 am start 启动一次)"
 
     def cmd(self, cmd, **params) -> str:
-        """HTTP 优先, 失败自动降级显式广播。cmd=短名或完整路径。"""
+        """控制命令统一入口: HTTP 优先, 失败自动降级 adb 广播。cmd=短名或完整路径。
+        ── 双通道契约(哪些方法有广播兜底) ──
+        · 双通道(经本方法): 电话/媒体/蓝牙/联系人全部触发类方法;
+        · 仅 HTTP: http()/http_post()/upload_audio/media_status/contacts_count/
+          events()/wait_event() 及各轮询 —— 二进制 POST 和 JSON 拉取没有广播形态;
+        · 仅 adb: start()/enable_account()/enable_autoconfirm()/grant_perms()/launch()
+          (装机期 HTTP 可能未就绪)。
+        降级代价: HTTP 6s 超时 + 广播 sleep(1.2)+logcat ≈ 8~10s/次。"""
         path = cmd if cmd.startswith("/") else PATHS.get(cmd, "/" + cmd)
         try:
             return self.http(path, **params)
@@ -259,6 +308,7 @@ class VPhone:
                 else f"启用失败(现在={chk.strip()}; Android13+ 需手动: 设置→无障碍)")
 
     def status(self) -> str:
+        """四引擎汇总状态+最近事件+控制面速查(对应 GET /status)。"""
         return self.cmd("/status")
 
     PERMS = ("android.permission.CALL_PHONE", "android.permission.READ_PHONE_STATE",
@@ -270,30 +320,40 @@ class VPhone:
         out = []
         for p in self.PERMS:
             r = self._adb("shell", "pm", "grant", PKG, p, timeout=15)
-            out.append(f"{p.split('.')[-1]}: {'OK' if r.returncode == 0 else (r.stderr or r.stdout).strip()[:60]}")
+            out.append(f"{p.split('.')[-1]}: {'OK' if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]}")
         return "运行时授权: " + "; ".join(out)
 
     # ================= 门C: 电话 =================
 
     def incoming(self, number="13800138000") -> str:
+        """注入来电(Telecom 注入连接, 手机+已连车机同时响铃)。可控可重复,
+        替代真机"打电话过来"。失败(账号未启用等)自动回滚 idle 并在返回文本里说明原因。"""
         return self.cmd("incoming", number=number)
 
     def dial(self, number="10086") -> str:
+        """模拟本机拨号(手机侧发起, 车机上表现为去电界面)。
+        对端默认 3s 自动接通 —— 见 set_auto_outgoing()。"""
         return self.cmd("dial", number=number)
 
     def answer(self) -> str:
+        """PC 侧代接当前来电(等价手机上划接听)。车机侧按接听回流为 CAR_ANSWER 事件。"""
         return self.cmd("answer")
 
     def hangup(self) -> str:
+        """挂断当前通话(任意状态), 状态机复位 idle。车机侧挂断回流为 CAR_HANGUP。"""
         return self.cmd("hangup")
 
     def hold(self, on=True) -> str:
+        """通话保持/恢复。on=True 保持(车机界面显示"保持中")。"""
         return self.cmd("hold", on="1" if on else "0")
 
     def dtmf(self, key) -> str:
+        """发送 DTMF 按键(key='0'-'9','*','#'; 需 active 通话)。
+        车机侧按键回流为 CAR_DTMF 事件。"""
         return self.cmd("dtmf", key=key)
 
     def audio_bt(self) -> str:
+        """通话音频切到蓝牙 SCO(等价用户在手机上选"蓝牙接听")。"""
         return self.cmd("audio_bt")
 
     def set_auto_outgoing(self, on=True) -> str:
@@ -306,26 +366,37 @@ class VPhone:
         return self.cmd("call_audio", name=name, loop="1" if loop else "0")
 
     def call_audio_stop(self) -> str:
+        """停止通话音频(对端"闭嘴")。"""
         return self.cmd("call_audio", stop="1")
 
     # ================= 联系人: 自定义/批量(PBAP 测车机通讯录) =================
 
+    def _contacts_status(self) -> str:
+        """轮询联系人批量任务状态(idle/进行中 N/M)。
+        单独包一层: 轮询中 HTTP 断连要报清"USB 掉了", 不能裸抛被误读成任务失败。"""
+        try:
+            return self.http("/contacts/status")
+        except VPhoneError as e:
+            raise VPhoneError(f"等待联系人任务时 HTTP 中断(USB掉线?): {e}") from e
+
     def contacts_load(self, count=10000, prefix="联系人", wait=True, timeout=300) -> str:
         """批量生成联系人(联系人00001/13800000001...)写入系统通讯录 → 车机 PBAP 可拉取。
-        1w 个约 10~30s; wait=True 轮询到完成并返回最终计数。"""
+        1w 个约 10~30s; wait=True 轮询到完成并返回最终计数。
+        注意: clear/load 是异步批量任务 —— 上一任务没跑完就发下一任务是"批量任务进行中"报错。"""
         r = self.cmd("contacts_load", count=count, prefix=prefix)
         if not wait or "已启动" not in r:
             return r
         deadline = time.time() + timeout
         while time.time() < deadline:
-            s = self.http("/contacts/status")
+            s = self._contacts_status()
             if "idle" in s:
                 return r + "\n" + s
             time.sleep(1.5)
-        return r + "\n(等待完成超时, 最新: " + self.http("/contacts/status") + ")"
+        return r + "\n(等待完成超时, 最新: " + self._contacts_status() + ")"
 
     def contacts_import(self, text=None, file=None, wait=True, timeout=300) -> str:
-        """导入自定义联系人: 每行 '姓名|号码' 或 '姓名,号码'。text 直传或 file 读文件。"""
+        """导入自定义联系人: 每行 '姓名|号码' 或 '姓名,号码'。text 直传或 file 读文件。
+        wait=True 轮询到写入完成(异步批量任务, 语义同 contacts_load)。"""
         if file:
             with open(file, "r", encoding="utf-8") as f:
                 text = f.read().replace("\r", "").replace("\n", ";")
@@ -334,30 +405,33 @@ class VPhone:
             return r
         deadline = time.time() + timeout
         while time.time() < deadline:
-            s = self.http("/contacts/status")
+            s = self._contacts_status()
             if "idle" in s:
                 return r + "\n" + s
             time.sleep(1.5)
-        return r + "\n(等待完成超时)"
+        return r + "\n(等待完成超时, 最新: " + self._contacts_status() + ")"
 
     def contacts_clear(self, wait=True, timeout=120) -> str:
-        """清空 vphone 写入的联系人(只删本账号, 不动手机原有)。"""
+        """清空 vphone 写入的联系人(只删本账号, 不动手机原有)。同样要等 idle。"""
         r = self.cmd("contacts_clear")
         if not wait:
             return r
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if "idle" in self.http("/contacts/status"):
+            if "idle" in self._contacts_status():
                 return r + "\n" + self.http("/contacts/count")
             time.sleep(1.0)
-        return r
+        return r + "\n(等待清空超时, 最新: " + self._contacts_status() + ")"
 
     def contacts_count(self) -> str:
+        """当前通讯录计数(本账号 vphone=N + 系统 total=N)。仅 HTTP 通道。"""
         return self.http("/contacts/count")
 
     # ================= 门B: 媒体 =================
 
     def set_track(self, title, artist="", album="", dur=240) -> str:
+        """设置单曲元数据(不真出声 —— 标题/歌手/时长皆可伪造, 测车机显示与进度条)。
+        真实出声请用 upload_audio()+playlist_audio()。dur 单位秒。"""
         return self.cmd("track", title=title, artist=artist, album=album, duration=dur)
 
     def playlist(self, text=None, file=None) -> str:
@@ -394,21 +468,34 @@ class VPhone:
         return self.cmd("seek", pos=int(sec))
 
     def play(self) -> str:
+        """继续/开始播放(MediaSession 置 playing, 车机界面同步"播放中")。"""
         return self.cmd("play")
 
     def pause(self) -> str:
+        """暂停(保持进度; 车机界面同步"已暂停")。"""
         return self.cmd("pause")
 
     def next(self) -> str:
+        """下一曲。空列表返回明确错误; 暂停态切歌=换曲但保持暂停(对齐真机播放器语义)。"""
         return self.cmd("next")
 
     def prev(self) -> str:
+        """上一曲(语义同 next)。"""
         return self.cmd("prev")
 
+    def media_status(self) -> str:
+        """媒体引擎一行状态(media=playing/paused, track=, pos=/dur=, playlist=N首)。
+        GUI 进度条轮询专用(轻量, 不带 /status 的四引擎汇总)。仅 HTTP 通道。"""
+        return self.http("/media/status")
+
     def silence(self, on=True) -> str:
+        """静音流模式开关。on=True 不真实解码, 用静音帧维持 A2DP 链路(测元数据/按键,
+        不测音质); off=用上传的音频文件真实解码。静音模式下进度由秒表模拟,
+        单曲播完即停(与真机播放器一致, 不原地循环)。"""
         return self.cmd("silence", on="1" if on else "0")
 
     def autoadvance(self, on=True) -> str:
+        """单曲播完是否自动进下一曲(默认开; 关掉可测"播完即停"的车机表现)。"""
         return self.cmd("autoadvance", on="1" if on else "0")
 
     # ---------- 乐库: 电脑音频 → 手机 → 车机真实播放 ----------
@@ -422,7 +509,10 @@ class VPhone:
         name = name or os.path.basename(path)
         with open(path, "rb") as f:
             data = f.read()
-        return self.http_post("/media/upload", data, name=name)
+        # 超时按体积放宽: 每 MB 约 8s(USB forward 实测), 下限 120s ——
+        # 固定 120s 会把大文件(无损几十章)中途掐断报"HTTP 不通"
+        tmo = max(120, int(len(data) / 1024 / 1024 * 8) + 15)
+        return self.http_post("/media/upload", data, name=name, timeout=tmo)
 
     def list_audio(self) -> list:
         """手机乐库文件列表: [{'name','kb'}]。"""
@@ -435,6 +525,7 @@ class VPhone:
         return devs
 
     def del_audio(self, name) -> str:
+        """删除乐库音频文件(name 见 list_audio())。"""
         return self.cmd("del", name=name)
 
     def media_diag(self) -> str:
@@ -470,12 +561,16 @@ class VPhone:
         return self.cmd("bt_state")
 
     def bt_scan(self, timeout=20) -> list:
-        """触发扫描并等结束, 返回 [{'name','mac','rssi'}] 按信号强度降序。"""
+        """触发扫描并等结束, 返回 [{'name','mac','rssi'}] 按信号强度降序。
+        扫描不出结果多为: 手机定位服务未开(Android 权限模型)或权限未授 —— 报错里提示。"""
         r = self.cmd("scan")
         if "扫描已启动" not in r:
             raise VPhoneError(r)
-        self.wait_for("扫描结束", timeout=timeout)
+        ended = self.wait_for("扫描结束", timeout=timeout)
         out = self.cmd("scan_result")
+        if not ended and "|" not in out:
+            raise VPhoneError(
+                f"扫描 {timeout}s 未结束且无结果: 定位服务开着吗? bt_state 里看线索")
         devs = []
         for line in out.splitlines():
             parts = line.split("|")
@@ -488,6 +583,7 @@ class VPhone:
         return self.cmd("bond", mac=target)
 
     def bt_unpair(self, target) -> str:
+        """解除配对(车机端设备消失, 模拟用户删除配对)。target=MAC 或名字片段。"""
         return self.cmd("unpair", mac=target)
 
     def bt_disconnect(self, mac=None, force=False) -> str:
@@ -499,14 +595,23 @@ class VPhone:
             p["mac"] = mac
         return self.cmd("bt_disconnect", **p)
 
+    # 已配对行里抠 MAC 用正则(行尾的 [A2DP已连] 等标记会让"按空格取最后一段"取错)
+    _MAC_RE = re.compile(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
+
+    def _pick_bonded_mac(self, marker=""):
+        """从 /bt/state 已配对行正则抠第一个 MAC。marker=额外命中条件(如 '[HFP已连]')。"""
+        for line in self.bt_state().splitlines():
+            if "已配对:" in line and (not marker or marker in line):
+                m = self._MAC_RE.search(line)
+                if m:
+                    return m.group(0)
+        return None
+
     def bt_reconnect(self, target=None, fallback=True) -> str:
-        """断线重连(手机侧主动发起)。target=None 时自动选第一台已配对设备。
+        """断线重连(手机侧主动发起)。target=None 时自动选第一台已配对设备(正则抠 MAC)。
         返回文本含各条路径结果; 连上与否用 wait_profile(target) 断言。"""
         if target is None:
-            for line in self.bt_state().splitlines():
-                if line.startswith("已配对:") or "已配对:" in line:
-                    target = line.split("已配对:", 1)[1].strip().split()[-1]  # MAC
-                    break
+            target = self._pick_bonded_mac()
             if not target:
                 return "(无已配对设备, 先 bt_bond)"
         return self.cmd("reconnect", mac=target, fallback="1" if fallback else "0")
@@ -519,15 +624,13 @@ class VPhone:
         """授权车机访问联系人/通话记录(PBAP/MAP) —— 车机能拉通讯录的前提。
         target=None 时自动选第一台带 [HFP已连] 的设备。反射失败时返回手动路径指引。"""
         if target is None:
-            for line in self.bt_state().splitlines():
-                if "已配对:" in line and "[HFP已连]" in line:
-                    target = line.split("已配对:", 1)[1].strip().split()[-1]
-                    break
+            target = self._pick_bonded_mac("[HFP已连]")
             if not target:
                 return "(没找到已连 HFP 的设备, 传 target=MAC 或先连接)"
         return self.cmd("allow_car", mac=target)
 
     def bt_enable(self, on=True) -> str:
+        """开/关手机蓝牙。on=False 关蓝牙 —— 模拟用户关蓝牙时车机的断连表现。"""
         return self.cmd("bt_enable", on="1" if on else "0")
 
     # ================= 部署 =================
@@ -550,9 +653,11 @@ class VPhone:
             pass
         try:
             r = self._adb("install", "-r", apk, timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except VPhoneError as e:
+            # _adb 已把 TimeoutExpired 包装成 VPhoneError(超时含设备掉线两种可能)
             raise VPhoneError(
-                "安装超时: 手机上大概率弹了厂商安装确认框(华为/小米等), 请手动点一下后重试")
+                "安装超时: 手机上大概率弹了厂商安装确认框(华为/小米等), 手动点一下后重试"
+                f" (原始: {e})") from e
         out = (r.stdout + r.stderr).strip()
         if "Success" not in out:
             raise VPhoneError(f"安装失败: {out[-300:]}")
@@ -592,15 +697,17 @@ class VPhone:
         import json
         return json.loads(self.http("/events", since=since))
 
-    def wait_event(self, type=None, detail=None, src=None, timeout=15, since=None) -> dict | None:
-        """阻塞等待结构化事件, 命中返回事件 dict, 超时返回 None(直接用于 assert)。
-        type 可传 str(精确)或 tuple/list(任一); detail 为子串过滤。
-            vp.incoming("13800138000")
-            assert vp.wait_event("CAR_ANSWER", timeout=15)
-            assert vp.wait_event(("CAR_NEXT","CAR_PREV"), timeout=15)
-        """
+    def wait_event(self, evt_type=None, detail=None, src=None, timeout=15, since=None) -> dict | None:
+        """阻塞等待结构化事件, 命中返回事件 dict, 超时返回 None(可直接 assert)。
+        evt_type 传 str(精确匹配)或 tuple/list(任一命中); detail=子串过滤;
+        src=来源过滤(car=车机按键/cmd=PC命令/app=App自身/bt=蓝牙栈/sys=系统Telecom侧)。
+        ── since 水位语义(重要) ──
+        不传: 先取当前水位, 只等"今后发生"的事件(推荐 —— 不会被历史事件误命中);
+        传 N: 从事件 id>N 起回放 —— 用于"先发命令再断言"且不想漏掉命令瞬间产生的事件。
+        例: assert vp.wait_event("CAR_ANSWER", timeout=15)
+            assert vp.wait_event(("CAR_NEXT", "CAR_PREV"), timeout=15)"""
         last = since if since is not None else self.events()["last"]
-        types = (type,) if isinstance(type, str) else type
+        types = (evt_type,) if isinstance(evt_type, str) else evt_type
         deadline = time.time() + timeout
         while time.time() < deadline:
             r = self.events(since=last)
@@ -618,19 +725,25 @@ class VPhone:
 
     # ---------- 兼容保留: logcat 文本事件流 ----------
 
-    def start_events(self):
-        """后台线程持续收 logcat(TAG=VPhone)。重复调用幂等。"""
+    def start_events(self, on_event=None):
+        """后台线程持续收 logcat(TAG=VPhone)。重复调用幂等。
+        on_event: 本次要设的回调 fn(line); 不传则保留已有回调 ——
+        (此处曾无条件 on_event=None, 把 GUI 预设的回调清掉, logcat 事件通道成死代码)。"""
         if getattr(self, "_evt_thread", None) and self._evt_thread.is_alive():
+            if on_event is not None:
+                self.on_event = on_event
             return
         self._evt_lines = deque(maxlen=2000)
         self._evt_lock = threading.Lock()
         self._evt_seq = 0
-        self.on_event = None
         self._evt_stop = threading.Event()
+        if on_event is not None or not hasattr(self, "on_event"):
+            self.on_event = on_event
         self._evt_thread = threading.Thread(target=self._evt_loop, daemon=True)
         self._evt_thread.start()
 
     def stop_events(self):
+        """停掉 logcat 事件线程并杀掉其 adb 子进程。GUI 关闭/重连时必须调, 否则进程残留。"""
         if getattr(self, "_evt_stop", None):
             self._evt_stop.set()
         p = getattr(self, "_evt_proc", None)

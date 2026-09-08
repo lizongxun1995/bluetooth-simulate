@@ -11,6 +11,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
@@ -264,7 +266,11 @@ object BtEngine {
             else "未找到已配对设备: $target (/bt/state 查列表)"
         val sb = StringBuilder("断开 ${sName(d)} ${d.address} (配对保留):\n")
 
-        try { MediaEngine.pause() } catch (_: Throwable) {}
+        // 断开前自动暂停媒体(否则 A2DP 一断, MediaPlayer 改走手机扬声器外放)。
+        // MediaEngine 状态归主线程管(Dispatcher.onMain), 这里只投递暂停请求
+        Handler(Looper.getMainLooper()).post {
+            try { MediaEngine.pause() } catch (_: Throwable) {}
+        }
 
         var hit = 0
         try {
@@ -287,28 +293,43 @@ object BtEngine {
             }
         }
         var prioOff = false
-        try {
-            for (p in listOf(a2dp to "A2DP", headset to "HFP")) {
-                val proxy = p.first ?: continue
-                val m: Method = proxy.javaClass.getMethod(
-                    "setPriority", BluetoothDevice::class.java, Int::class.javaPrimitiveType
-                )
-                m.invoke(proxy, d, 0)
+        if (hit > 0) {
+            // ③ 只有真的断开了才关 priority(拒绝车机秒回连): 若 ①② 都没断开,
+            // 关掉只会留下"设备还连着但不再自动回连"的脏状态
+            try {
+                for (p in listOf(a2dp to "A2DP", headset to "HFP")) {
+                    val proxy = p.first ?: continue
+                    val m: Method = proxy.javaClass.getMethod(
+                        "setPriority", BluetoothDevice::class.java, Int::class.javaPrimitiveType
+                    )
+                    m.invoke(proxy, d, 0)
+                }
+                prioOff = true
+                sb.append("③ A2DP/HFP priority → 0(拒绝车机自动回连; 重连会先恢复100)\n")
+            } catch (e: Throwable) {
+                sb.append("③ setPriority 不可用(${cause(e)}) → 车机若几秒内自己回连属车机主动行为\n")
             }
-            prioOff = true
-            sb.append("③ A2DP/HFP priority → 0(拒绝车机自动回连; 重连会先恢复100)\n")
-        } catch (e: Throwable) {
-            sb.append("③ setPriority 不可用(${cause(e)}) → 车机若几秒内自己回连属车机主动行为\n")
+        } else {
+            sb.append("③ priority 未动(①②都没断开成功, 关了只会留下脏状态)\n")
         }
 
         if (hit == 0 && force) {
             sb.append("④ 兜底: 直接关蓝牙(恢复用 /bt/enable?on=1 或 /bt/reconnect)\n")
             Thread { setEnabled(false) }.start()
         }
-        EventLog.add(
-            EventLog.BT_DISCONNECT, "cmd",
-            "指令断开: ${sName(d)} ${d.address} (配对保留, priority=${if (prioOff) "已关" else "未关"})"
-        )
+        // 事件必须如实: 断言侧 wait_event(BT_DISCONNECT) 只该在真断开时命中,
+        // 失败走独立类型 BT_DISCONNECT_FAILED, 不污染成功断言
+        if (hit > 0) {
+            EventLog.add(
+                EventLog.BT_DISCONNECT, "cmd",
+                "指令断开: ${sName(d)} ${d.address} (配对保留, priority=${if (prioOff) "已关" else "未关"})"
+            )
+        } else {
+            EventLog.add(
+                EventLog.BT_DISCONNECT_FAILED, "cmd",
+                "断开未成功(${sName(d)} ${d.address}): 系统拒绝了所有路径, 设备仍连接"
+            )
+        }
         sb.append("→ 看事件流 ACL/A2DP/HFP 断开; /bt/state 确认 [已连] 标记消失")
         return sb.toString().trim()
     }

@@ -6,6 +6,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.telecom.CallAudioState
 import android.telecom.Connection
 import android.telecom.DisconnectCause
@@ -20,10 +22,21 @@ import android.util.Log
  * 依据: Android Telecom 官方框架, managed ConnectionService 创建的呼叫
  * "在蓝牙设备(车机/耳机)上可见且可控" —— 车机接听/挂断按键回流到
  * VConnection.onAnswer/onDisconnect, 即门C 判定证据。
+ *
+ * 状态转换(真机基准: 任何失败/拆线路径都必须归回 idle, 不留悬挂 connection):
+ *   idle → ringing   (incoming 注入 / 车机侧无)
+ *   idle → dialing   (dial 指令 / 车机 ATD)
+ *   ringing → active (answer 指令 / 车机接听 onAnswer)
+ *   ringing → idle   (车机拒接 onReject / 指令挂断 / 系统拆线 onAbort)
+ *   dialing → active (3s 自动接通 / answer)
+ *   active ⇄ held    (hold / onHold / onUnhold)
+ *   any → idle       (hangup / onDisconnect / onAbort)
  */
 object CallEngine {
     const val TAG = "VPhone"
     const val EVT_ACTION = "com.bt.vphone.EVT"
+
+    private val main = Handler(Looper.getMainLooper())
 
     lateinit var app: Context
     var state: String = "idle"
@@ -106,6 +119,15 @@ object CallEngine {
             pendingIncomingNumber = number
             telecom().addNewIncomingCall(handle, extras)
             setState("ringing", number)
+            // EMUI 静默失败兜底: 账号未启用时 addNewIncomingCall 不抛异常也不建连接,
+            // 1.5s 后仍无 connection 就回滚 idle —— 否则 state 卡在 ringing,
+            // hangup 又报"无通话"救不回, 后续来电全被"已有通话"挡死
+            main.postDelayed({
+                if (state == "ringing" && connection == null) {
+                    clearFromConnection()
+                    EventLog.add(EventLog.CALL_ENDED, "app", "注入来电未生效(账号未启用?), 已回滚 idle")
+                }
+            }, 1500)
             "来电已注入: $number —— 等待车机弹来电UI"
         } catch (e: Exception) {
             "注入来电失败: ${e.message} (多半=电话账号未启用, 先 registerAccount + 手动启用)"
@@ -122,6 +144,8 @@ object CallEngine {
             telecom().placeCall(Uri.parse("tel:" + Uri.encode(number)), extras)
             "去电已提交: $number —— 车机应显示拨号态, 随后 answer 置通话中"
         } catch (e: Exception) {
+            // 失败不留脏标记: dialFromCmd 若残留, 下次车机 ATD 会被误判成"指令拨出"
+            dialFromCmd = false
             "去电失败: ${e.message} (需授权 CALL_PHONE 且账号已启用)"
         }
     }
@@ -148,8 +172,7 @@ object CallEngine {
         } catch (e: Exception) {
             "挂断异常: ${e.message}"
         } finally {
-            connection = null
-            state = "idle"
+            clearFromConnection()
         }
     }
 
@@ -202,9 +225,14 @@ object CallEngine {
         evt("呼叫状态 → $s ($number)")
     }
 
+    /** 通话结束统一清理(指令挂断/车机挂断/拒接/系统拆线共用) —— 真机基准:
+     *  挂断即归 idle、号码清空、通话音频停(SCO 已掉, 残留只会占着播放器)。 */
     fun clearFromConnection() {
         connection = null
         state = "idle"
+        number = ""
+        pendingIncomingNumber = null
+        try { CallAudioEngine.stop() } catch (_: Throwable) {}
     }
 
     fun status(): String = "call=$state number=$number account=[${accountStatus()}]"
