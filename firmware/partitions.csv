@@ -1,5 +1,0 @@
-# Name,   Type, SubType, Offset,   Size
-# 板载零存储:全部媒体数据存电脑,实时推流。Flash 只留固件。
-nvs,      data, nvs,     0x9000,   0x6000
-phy_init, data, phy,     0xf000,   0x1000
-factory,  app,  factory, 0x10000,  0x3f0000

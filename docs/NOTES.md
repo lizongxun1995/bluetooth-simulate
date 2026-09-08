@@ -865,3 +865,17 @@ windowed exe 无自己的控制台, Windows 会给每个 adb 子进程新弹一�
 - 验证: 新增 vphone/test_lib.py 无设备单测 8 组全绿(monkeypatch http 的 fake 严格模拟
   since 水位过滤——初版 fake 不滤 since 导致假失败, 修正后全过); exe 已重建。
 - 挂账: 设备冒烟(dial→expect_event/水位回放/GUI 事件流)待华为手机重新插线后补。
+
+**追加：vphone 第六轮补4 —— 仓库大扫除(一期/废弃路线全清)**
+
+用户定夺: 项目只保留 vphone 主力路线。删除清单(先 grep 全量确认 vphone 现役代码/构建
+零引用后再动手):
+- ESP32 一期: btphone/ firmware/ tests/ examples/ tools/ + 根 pyproject.toml(btphone 包
+  配置) + docs/ 五份一期文档(DEPLOY/PROTOCOL/LYRICS_RESEARCH/BRINGUP/HANDOFF)。
+- Windows 蓝牙废弃路线: btwinrt/(C# 引擎) windemo/(C# demo) pydemo/(tkinter 前端+DLL)。
+- 本地杂物(未入库): 资料/(240MB 板卡手册/驱动/安装包, 物理删除不可找回)、gui_err/out.log、
+  .pytest_cache(一期 pytest 的)。
+git 跟踪的部分用 git rm, 历史提交里随时可找回; 根目录只剩 vphone/ docs/ README。
+README 结构/文档索引与 .gitignore(firmware/windemo/tools 条目)同步收窄; NOTES 全轮次日志
+保留未动(历史引用指向已删路径属正常)。教训备查: build_exe.py 的 adb 走 PATH, 与资料/无依赖,
+清除安全。

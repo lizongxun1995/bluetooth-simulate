@@ -4,9 +4,8 @@
 蓝牙测试终端——车机看到的 A2DP/HFP/AVRCP/PBAP 对端就是一台真手机（协议层就是手机自带
 厂商栈），但播放内容、来电、联系人、配对动作全部由 PC 脚本控制，替代"人手一部手机"。
 
-> ESP32 路线（btphone/）为本仓库一期工程，保留作信令级参考；因协议栈与真机差距大，
-> 已由 vphone 路线接替（决策记录见 docs/NOTES.md）。Windows 蓝牙路线（btwinrt）因
-> 系统无 HFP AG 能力定案放弃。
+> 一期 ESP32 路线（btphone/firmware）与 Windows 蓝牙路线（btwinrt/windemo）已定案放弃，
+> 代码与文档已从仓库清除（git 历史与全轮次工程日志见 docs/NOTES.md，需要时从老提交找回）。
 
 ## vphone 能力一览
 
@@ -53,12 +52,8 @@ vp.contacts_load(count=10000)                         # 1w 联系人→车机通
 ## 目录结构
 
 ```
-vphone/          主力工程: APK( Kotlin) + Python(lib/CLI/GUI) + build_exe.py + apk/(发行包)
-docs/            vphone-TECH/API/DEV 三文档 + ESP32 时代文档(DEPLOY/PROTOCOL/...) + NOTES(全轮次日志)
-btphone/         一期 ESP32 Python 库(保留参考)
-firmware/        一期 ESP-IDF 固件工程(保留参考)
-tests/ examples/ tools/    一期测试/示例/工具
-资料/            (不入库)
+vphone/          主力工程: APK(Kotlin) + Python(lib/CLI/GUI) + build_exe.py/build_py.py + apk/(发行包)
+docs/            vphone-TECH/API/DEV 三文档 + NOTES(全轮次日志)
 ```
 
 ## 文档
@@ -66,7 +61,6 @@ tests/ examples/ tools/    一期测试/示例/工具
 - [vphone 技术文档](docs/vphone-TECH.md) — 架构/线程模型/双控制面/事故记录/**真机行为基准表**/**与真机已知偏差清单**
 - [vphone 接口文档](docs/vphone-API.md) — HTTP 全端点 / Python API / CLI / 事件总表 / 断言示例
 - [vphone 开发文档](docs/vphone-DEV.md) — 任务跟进 / 挂账项 / 车机侧验收清单 / 构建发布流程
-- 一期文档: [部署](docs/DEPLOY.md) [串口协议](docs/PROTOCOL.md) [歌词调研](docs/LYRICS_RESEARCH.md) [硬件联调](docs/BRINGUP.md) [交接](docs/HANDOFF.md)
 
 ## 当前状态与路线
 

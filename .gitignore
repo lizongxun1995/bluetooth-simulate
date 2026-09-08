@@ -6,28 +6,13 @@ dist/
 .pytest_cache/
 .venv/
 
-# firmware build artifacts
-firmware/build/
-firmware/sdkconfig
-firmware/dependencies.lock
-firmware/managed_components/
-
 # vphone (Android)
 vphone/.gradle/
 vphone/local.properties
 
-# vphone (Python wheel 构建产物; APK 真源仍是 vphone/apk/)
+# Python wheel 构建产物(APK 真源仍是 vphone/apk/)
 vphone/dist_py/
 vphone/vphone_data/apk/
-
-# windemo (C#)
-windemo/bin/
-windemo/obj/
-
-# 生成物 / 可重下的大文件
-tools/_apidump/
-资料/开发软件/*.exe
-资料/*.rar                 # 板卡资料压缩包(119M, 超 GitHub 100M 限制)
 
 # 日志
 *.log
@@ -37,6 +22,6 @@ tools/_apidump/
 .idea/
 .vscode/
 
-# 资料目录(开发板PDF/教程)体积大且非代码, 不进 git
+# 资料(板卡PDF/驱动/安装包)不入库; 若再放回也防误提交
 资料/
 vphone/test_tone.wav
