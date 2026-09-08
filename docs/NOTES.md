@@ -825,3 +825,9 @@ PC 回归全过）和「与真机已知偏差清单」（无 SIM 信号电量 / 
   根 README 改 vphone 主力。APK 同步 apk/vphone.apk，exe 重建（13MB 内嵌新 APK）。
 - 部署铁律（本轮确认）：华为 adb 安装可能每次都弹确认框，卡住不慌、等人到手机旁手动点，
   不反复重试；设备必须挂 hub；重装后内存态（播放列表等）复位需重建，乐库/联系人通常保留。
+
+**追加：vphone 第六轮补 —— GUI exe 下 adb 子进程弹黑窗修复**
+
+windowed exe 无自己的控制台, Windows 会给每个 adb 子进程新弹一个黑窗(连接/扫描/广播/
+事件流全是重灾区)。vphone_lib 所有子进程 spawn 点(_adb 的 run + logcat 事件流 Popen)统一加
+`CREATE_NO_WINDOW`(非 Windows 平台置 0), 输出仍走管道不受影响。exe 已重建。

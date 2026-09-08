@@ -42,6 +42,11 @@ DEFAULT_LOCAL_PORT = 18800   # PC 侧 forward 端口(避开本机 8800 常见占
 ACCOUNT_ARGS = f"{PKG}/.VPhoneConnectionService VPHONE 0".split()
 
 
+# Windows: GUI(windowed exe)无控制台时, 每个 adb 子进程都会新弹一个黑窗 ——
+# 所有子进程统一带 CREATE_NO_WINDOW(仅 Windows 有此标志; 输出仍走管道不受影响)。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
 class VPhoneError(RuntimeError):
     pass
 
@@ -169,7 +174,8 @@ class VPhone:
         cmd = [self.adb_path] + (["-s", self.serial] if self.serial else []) + list(args)
         try:
             return subprocess.run(cmd, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=timeout)
+                                  encoding="utf-8", errors="replace", timeout=timeout,
+                                  creationflags=_NO_WINDOW)
         except subprocess.TimeoutExpired as e:
             raise VPhoneError(
                 f"adb {' '.join(a for a in args[:4])} 超时({timeout}s): 设备掉线/USB异常?") from e
@@ -758,7 +764,8 @@ class VPhone:
             ["logcat", "-s", "VPhone", "-T", "1"]
         self._evt_proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, encoding="utf-8", errors="replace")
+            text=True, encoding="utf-8", errors="replace",
+            creationflags=_NO_WINDOW)
         for line in self._evt_proc.stdout:
             if self._evt_stop.is_set():
                 break
