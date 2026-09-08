@@ -123,14 +123,16 @@ class App:
         ttk.Label(r3, text="号码:").pack(side="left")
         self.e_num = ttk.Entry(r3, width=16); self.e_num.insert(0, "13800138000")
         self.e_num.pack(side="left", padx=4)
-        for text, fn in (("📞模拟来电", self._incoming), ("✔接听", lambda: self.vp.answer()),
+        for text, fn in (("📞模拟来电", self._incoming), ("✔接听/接通", lambda: self.vp.answer()),
                          ("✖挂断", lambda: self.vp.hangup()),
                          ("保持", lambda: self.vp.hold(True)),
                          ("恢复", lambda: self.vp.hold(False)),
                          ("拨出", self._dial),
                          ("🎧蓝牙通话音频", lambda: self.vp.audio_bt())):
             ttk.Button(r3, text=text, command=lambda f=fn: self._run(f)).pack(side="left", padx=2)
-        self.var_autoout = tk.BooleanVar(value=True)
+        # 默认手动: 车机拨出后停在拨号态, 由「✔接听/接通」按钮远程摘机(模拟对端接听);
+        # 勾上则回到老行为(3s 自动接通)。连接成功时会把勾选框状态同步到手机。
+        self.var_autoout = tk.BooleanVar(value=False)
         ttk.Checkbutton(r3, text="车机拨出3s自动接通", variable=self.var_autoout,
                         command=self._set_auto_outgoing).pack(side="left", padx=10)
         r3b = ttk.Frame(f2); r3b.pack(fill="x", padx=4, pady=2)
@@ -672,7 +674,9 @@ class App:
                     # 一次性环境加固(幂等): 授权/配对自动确认/车机拨出走 VPhone 账号
                     self._run(self.vp.grant_perms)
                     self._run(self.vp.enable_autoconfirm)
-                    self._run(self.vp.set_auto_outgoing(True))
+                    # 车机拨出接通模式以勾选框为准(主线程先取值, 默认手动接通)
+                    auto_on = self.var_autoout.get()
+                    self._run(lambda: self.vp.set_auto_outgoing(auto_on))
                     self._contacts_refresh()
                     self._refresh_caudio()
                     # 代际+1: 旧的 _evt_poll/_stat_poll 线程检测到后代不符即自退,

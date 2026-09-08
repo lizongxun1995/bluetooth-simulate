@@ -831,3 +831,11 @@ PC 回归全过）和「与真机已知偏差清单」（无 SIM 信号电量 / 
 windowed exe 无自己的控制台, Windows 会给每个 adb 子进程新弹一个黑窗(连接/扫描/广播/
 事件流全是重灾区)。vphone_lib 所有子进程 spawn 点(_adb 的 run + logcat 事件流 Popen)统一加
 `CREATE_NO_WINDOW`(非 Windows 平台置 0), 输出仍走管道不受影响。exe 已重建。
+
+**追加：vphone 第六轮补2 —— 车机拨出改默认手动接通(GUI)**
+
+车机 ATD 拨出后 3s 自动接通(模拟对端摘机)改成默认手动: APK 侧机制本就齐(auto-outgoing
+关掉停在拨号态, /call/answer 远程摘机), 但 GUI 连接时硬编码推 set_auto_outgoing(True) 且
+勾选框默认勾上。改: 勾选框默认不勾(手动), 连接时按勾选框状态同步, 「接听」按钮更名
+「接听/接通」(来电 ringing 和拨号态 dialing 通用)。CLI/脚本行为不变(APK 默认仍自动,
+要手动自己 set_auto_outgoing(False))。exe 已重建。
