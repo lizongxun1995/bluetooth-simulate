@@ -46,6 +46,7 @@ object Dispatcher {
         "audio_bt" to "/call/audio-bt",
         "auto_outgoing" to "/call/auto-outgoing",
         "call_audio" to "/call/audio",
+        "call_audio_status" to "/call/audio-status",
         "track" to "/media/track",
         "play" to "/media/play",
         "pause" to "/media/pause",
@@ -99,11 +100,16 @@ object Dispatcher {
                 "/call/dtmf" -> onMain { CallEngine.dtmf(q["key"] ?: "") }
                 "/call/audio-bt" -> onMain { CallEngine.audioBluetooth() }
                 "/call/auto-outgoing" -> onMain { CallEngine.setAutoOutgoing((q["on"] ?: "1") != "0") }
+                // 参数优先级 stop > seek > name(拖进度与起播互斥, stop 永远最急)
                 "/call/audio" ->
                     if (q["stop"] == "1") onMain { CallAudioEngine.stop() }
+                    else if (q["seek"] != null) q["seek"]?.toIntOrNull()
+                        ?.let { s -> onMain { CallAudioEngine.seek(s) } }
+                        ?: "缺少有效的 seek 参数(目标秒), 用法 /call/audio?seek=30"
                     else onMain {
                         CallAudioEngine.play(q["name"] ?: "", (q["loop"] ?: "0") == "1")
                     }
+                "/call/audio-status" -> onMain { CallAudioEngine.progress() }
 
                 // ---- 媒体(门B): 状态机全在主线程 ----
                 "/media/track" -> onMain {
@@ -189,7 +195,7 @@ object Dispatcher {
             "HTTP: curl \"http://<手机IP>:8800/call/incoming?number=13800138000\"\n" +
             "     (PC 亦可 adb forward tcp:18800 tcp:8800 后用 127.0.0.1:18800)\n" +
             "adb : adb shell am broadcast -a com.bt.vphone.CMD --es cmd incoming --es number 13800138000\n" +
-            "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing|audio  \n" +
+            "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing|audio|audio-status  \n" +
             "     /media/track|play|pause|next|prev|status|jump|seek|silence|autoadvance|playlist|upload|files|del|diag  \n" +
             "     /bt/state|scan|scan-result|bond|unpair|disconnect|reconnect|allow-car|name|enable  \n" +
             "     /contacts/load|import|clear|count|status  /events?since=N(JSON,断言用)"

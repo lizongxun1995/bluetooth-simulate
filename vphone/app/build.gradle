@@ -11,8 +11,8 @@ android {
         applicationId "com.bt.vphone"
         minSdk 21          // Android 5.0+ 通用装机
         targetSdk 34
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 2
+        versionName "0.6.0"   // 对齐仓库发行线(lib/wheel 0.6.0); versionCode 单调递增
     }
 
     buildTypes {

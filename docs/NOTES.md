@@ -879,3 +879,37 @@ git 跟踪的部分用 git rm, 历史提交里随时可找回; 根目录只剩 v
 README 结构/文档索引与 .gitignore(firmware/windemo/tools 条目)同步收窄; NOTES 全轮次日志
 保留未动(历史引用指向已删路径属正常)。教训备查: build_exe.py 的 adb 走 PATH, 与资料/无依赖,
 清除安全。
+
+**追加：vphone 第七轮 —— 通话音频进度接口(需求方: 上位机蓝牙调试弹窗)**
+
+需求文档: full-stack-fastapi-template-refactor/docs/vphone-APK需求-通话音频进度接口.md。
+APK 侧交付(本轮), 纯新增不改既有端点:
+
+- `GET /call/audio-status` 一行进度(对齐 /media/status 风格): `callAudio=off` 或
+  `callAudio=playing name="xx.mp3" pos=12s dur=35s loop=0`。name 取原始文件名(新存
+  rawName 字段), 不复用 playingName——循环态它被写成 "xx.mp3(循环)"(装饰名保留给人看);
+  在播判据用 playingName 而非 mp 非空: 自然播完回调只置空名字不 release 播放器
+  (onCompletion 里 release 自身会死锁, 同 MediaEngine 事故)。播放态与通话态解耦,
+  无通话照实报 playing(该不该播由上位机结合事件流判断)。
+- `GET /call/audio?seek=N` 拖动: 钳制 [0,dur], 未播放明确报错不误起播; 参数优先级
+  stop > seek > name。缺参/坏参报错(对齐 /media/seek 的"危险默认值"纪律)。
+- `CALL_AUDIO_END` 事件 APK 本就有(自然播完 src=app, 手动 stop 不发), 本轮补进 API
+  文档事件表(需求说的"漏列"是文档漏, 不是代码漏)。
+- 版本: versionCode 1→2, versionName 0.1.0→0.6.0(对齐仓库发行线)。vphone_lib 按需求
+  零改动(上位机直接 vp.http() 拿原文)。
+
+设备验收(华为 TEL-AN00a, 需求§5 用例全过): ①off ②pos 递增 ③seek 生效+越界钳制
+④未播 seek 报错 ⑤播完归 off+CALL_AUDIO_END 恰发 2 次(seek 到末尾也触发, 中间手动
+stop 不误发) ⑥循环 name 无后缀/loop=1/过 dur 回绕恒 playing ⑦媒体全家+call/audio
+旧用法回归不变。测试用 8s 短音频 _short8s.wav 留在乐库(快速播完用例专用)。
+
+顺带关闭补3挂账: dial→expect_event(CALL_ACTIVE/CALL_ENDED)+水位回放+expect_no_event
+设备实测全绿(GUI 事件流渲染仍待人工, 沙箱假死是环境假象不变)。
+
+环境发现(排障半小时的教训): 本机 EMUI 对**裸隐式** shell 广播(am broadcast -a X 不带
+-p/-n)一律 "Background execution not allowed", 应用前台+前台服务都拦; lib broadcast()
+实际发的 -p 包名限定形式和显式 -n 组件形式均正常送达——lib 无需改, 以后手工调试广播
+务必带 -p(与 ControlReceiver/lib 注释的既有结论一致, 本次实测复核)。
+
+产物: APK 878441B 同步 apk/; exe(13MB)/wheel(0.6.0) 重建, wheel 内嵌 APK 字节一致;
+test_lib.py 8 组回归全绿。

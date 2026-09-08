@@ -19,6 +19,7 @@ import java.io.File
  *
  * 用法: 先有通话(active, 车机接听或 answer/auto-outgoing) → /call/audio?name=xx.mp3
  * 车机听筒/扬声器即播放该音频; 无通话时播放无意义(SCO 未建立, 车机听不到)。
+ * 进度: /call/audio-status 一行查询(上位机进度条), /call/audio?seek=N 拖动。
  */
 object CallAudioEngine {
 
@@ -26,6 +27,9 @@ object CallAudioEngine {
 
     @Volatile var playingName: String? = null
         private set
+
+    /** 原始文件名(无"(循环)"后缀): progress()/seek() 报进度用, playingName 是给人看的装饰名 */
+    @Volatile private var rawName: String? = null
 
     fun play(name: String, loop: Boolean): String {
         if (name.isBlank()) return "用法: /call/audio?name=xx.mp3&loop=1 (stop=1 停止)"
@@ -44,11 +48,13 @@ object CallAudioEngine {
             m.isLooping = loop
             m.setOnCompletionListener {
                 playingName = null
+                rawName = null
                 EventLog.add(EventLog.CALL_AUDIO_END, "app", "通话音频播完: ${f.name}")
             }
             m.prepare()
             m.start()
             pinSco(m)
+            rawName = f.name
             mp = m
             playingName = if (loop) "${f.name}(循环)" else f.name
             val warn = if (CallEngine.state != "active")
@@ -65,7 +71,43 @@ object CallAudioEngine {
         mp?.let { try { it.release() } catch (_: Exception) {} }
         mp = null
         playingName = null
+        rawName = null
         return if (had != null) "通话音频已停($had)" else "本就未在播"
+    }
+
+    /**
+     * /call/audio-status: 一行进度, 风格对齐 /media/status, 供上位机 1s 轮询画进度条。
+     * 未播放(从未播/手动停/自然播完)统一 off; 播放与通话状态无关 —— 无通话但音频在播
+     * 时照实返回 playing(是否该播由上位机结合事件流判断, 此处不耦合)。
+     * 在播判据是 playingName 而非 mp: 自然播完回调只置空名字不 release 播放器
+     * (onCompletion 里 release 自身会死锁, 见 MediaEngine 同型事故)。
+     */
+    fun progress(): String {
+        val m = mp
+        if (playingName == null || m == null) return "callAudio=off"
+        return try {
+            val pos = m.currentPosition / 1000
+            val dur = try { m.duration / 1000 } catch (_: Exception) { 0 }
+            "callAudio=playing name=\"${rawName ?: playingName}\" pos=${pos}s dur=${dur}s" +
+                " loop=${if (m.isLooping) 1 else 0}"
+        } catch (_: Exception) {
+            "callAudio=off"
+        }
+    }
+
+    /** /call/audio?seek=N: 拖动通话音频进度, 钳制 [0,dur]。未播放明确报错, 不静默成功也不误起播。 */
+    fun seek(sec: Int): String {
+        val m = mp
+        if (playingName == null || m == null)
+            return "未在播放，无可拖动进度 (先 /call/audio?name=xx.mp3)"
+        return try {
+            val dur = try { m.duration / 1000 } catch (_: Exception) { 0 }
+            val target = if (dur > 0) sec.coerceIn(0, dur) else maxOf(sec, 0)
+            m.seekTo(target * 1000)
+            "通话音频进度: ${target}s/${dur}s"
+        } catch (e: Exception) {
+            "!! 通话音频拖动失败: ${e.message}"
+        }
     }
 
     fun status(): String = "callAudio=${playingName ?: "off"}"

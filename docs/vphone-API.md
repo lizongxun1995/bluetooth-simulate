@@ -61,7 +61,8 @@ WiFi 直连 `http://<手机IP>:8800`。返回纯文本，**例外：`/events` �
 | `GET /call/dtmf` | `key` | DTMF 按键（0-9*#，需 active） | 双 |
 | `GET /call/audio-bt` | — | 通话音频切蓝牙 SCO | 双 |
 | `GET /call/auto-outgoing` | `on=0/1` | 车机拨出后是否 3s 自动接通（默认开） | 双 |
-| `GET /call/audio` | `name`,`loop=0/1` 或 `stop=1` | 通话中播放乐库音频（SCO 下行模拟对端说话） | 双 |
+| `GET /call/audio` | `name`,`loop=0/1` / `stop=1` / `seek`(秒) | 通话中播放乐库音频（SCO 下行模拟对端说话）。参数优先级 `stop`>`seek`>`name`；`seek` 拖进度（钳制 `[0,dur]`），未播放时报错、不误起播 | 双 |
+| `GET /call/audio-status` | — | 一行通话音频进度（上位机进度条 1s 轮询）：`callAudio=off` 或 `callAudio=playing name="xx.mp3" pos=12s dur=35s loop=0`。name 为纯文件名（无"(循环)"后缀，循环态用 `loop=1` 表达）；播放态与通话态无关，无通话照实报 playing | 双 |
 
 ### 1.3 媒体（门B）
 
@@ -126,6 +127,13 @@ WiFi 直连 `http://<手机IP>:8800`。返回纯文本，**例外：`/events` �
 `incoming(number="13800138000")` `dial(number="10086")` `answer()` `hangup()`
 `hold(on=True)` `dtmf(key)` `audio_bt()`
 `set_auto_outgoing(on=True)` `call_audio(name, loop=False)` `call_audio_stop()`
+
+通话音频进度不设包装方法（上位机直接解析原文一行）：
+
+```python
+vp.http("/call/audio-status")          # 'callAudio=off' 或 'callAudio=playing name="xx.mp3" pos=12s dur=35s loop=0'
+vp.http_post("/call/audio", {"seek": 30})   # 拖进度；未播放返回错误文本
+```
 
 ### 2.3 门B 媒体
 
@@ -239,6 +247,7 @@ vphone <cmd> ...                        # pip 安装后等价命令(装到 PATH)
 | `RING_IN` / `CALL_ACTIVE` / `CALL_HELD` / `CALL_ENDED` | app/sys | 通话状态机迁移 |
 | `CMD_PLAY/PAUSE/NEXT/PREV/...` | cmd | PC 指令回显（断言"指令已生效"用） |
 | `MEDIA_TRACK_END` / `MEDIA_UPLOAD` / `MEDIA_SCO_RELEASED` | app/cmd | 播完 / 上传 / SCO 释放 |
+| `CALL_AUDIO_END` | app | 通话音频自然播完（loop=0；detail 带文件名，手动 stop 不发） |
 | `BT_ACL_CONNECTED/DISCONNECTED` `BT_A2DP_CONNECTED/DISCONNECTED` `BT_HFP_CONNECTED/DISCONNECTED` | bt | 链路迁移（断连/回连测试主力） |
 | `BT_DISCONNECT_FAILED` | app | 断开指令未成功（设备仍连接，断言别误判） |
 | `BT_BONDED` / `BT_BOND_FAILED` / `BT_SCAN_*` | bt/app | 配对/扫描 |
