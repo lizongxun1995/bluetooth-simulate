@@ -33,7 +33,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-from vphone_lib import VPhone, VPhoneError
+from vphone_lib import VPhone, VPhoneError, VEvent
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus")
 
@@ -125,8 +125,8 @@ class App:
         self.e_num.pack(side="left", padx=4)
         for text, fn in (("📞模拟来电", self._incoming), ("✔接听/接通", lambda: self.vp.answer()),
                          ("✖挂断", lambda: self.vp.hangup()),
-                         ("保持", lambda: self.vp.hold(True)),
-                         ("恢复", lambda: self.vp.hold(False)),
+                         ("保持", lambda: self.vp.hold(on=True)),
+                         ("恢复", lambda: self.vp.hold(on=False)),
                          ("拨出", self._dial),
                          ("🎧蓝牙通话音频", lambda: self.vp.audio_bt())):
             ttk.Button(r3, text=text, command=lambda f=fn: self._run(f)).pack(side="left", padx=2)
@@ -270,23 +270,23 @@ class App:
         except ValueError:
             self.log("!! 时长须为整数(秒)")
             return
-        self._run(lambda: self.vp.set_track(title, artist, album, dur))
+        self._run(lambda: self.vp.set_track(title=title, artist=artist, album=album, dur=dur))
 
     def _incoming(self):
         num = self.e_num.get()
-        self._run(lambda: self.vp.incoming(num))
+        self._run(lambda: self.vp.incoming(number=num))
 
     def _dial(self):
         num = self.e_num.get()
-        self._run(lambda: self.vp.dial(num))
+        self._run(lambda: self.vp.dial(number=num))
 
     def _set_silence(self):
         on = self.var_silence.get()
-        self._run(lambda: self.vp.silence(on))
+        self._run(lambda: self.vp.silence(on=on))
 
     def _set_auto_outgoing(self):
         on = self.var_autoout.get()
-        self._run(lambda: self.vp.set_auto_outgoing(on))
+        self._run(lambda: self.vp.set_auto_outgoing(on=on))
 
     def _pick_audio(self):
         """电脑上选音频文件 → 上传手机乐库 → 生成播放列表 → 播放(车机真实出声)。"""
@@ -299,7 +299,7 @@ class App:
         def task():
             try:
                 self.q.put(("log", f"推送 {len(paths)} 个文件并播放…"))
-                self.q.put(("log", self.vp.play_audio_files(list(paths))))
+                self.q.put(("log", self.vp.play_audio_files(paths=list(paths))))
             except Exception as e:
                 self.q.put(("log", f"[错误] {e}"))
         self.pool.submit(task)
@@ -361,7 +361,7 @@ class App:
                     keep = min(cur_idx(), max(len(pl_items) - 1, 0))
                     self.q.put(("log", self.vp.playlist(text="\n".join(lines))))
                     if pl_items:
-                        self.q.put(("log", self.vp.media_jump(keep)))
+                        self.q.put(("log", self.vp.media_jump(idx=keep)))
                     self.q.put(("call", refresh))
                 except Exception as e:
                     self.q.put(("log", f"[错误] {e}"))
@@ -398,7 +398,7 @@ class App:
         def on_dbl(_ev):
             i = sel()
             if i is not None:
-                self._run(lambda: "\n".join([self.vp.media_jump(i), self.vp.play()]))
+                self._run(lambda: "\n".join([self.vp.media_jump(idx=i), self.vp.play()]))
         pl.bind("<Double-Button-1>", on_dbl)
 
         ttk.Label(win, text="乐库 (上传过的音频文件; 选中→加入播放列表):").pack(
@@ -431,7 +431,7 @@ class App:
         def del_sel():
             n = lib_sel()
             if n:
-                self._run(lambda: self.vp.del_audio(n))
+                self._run(lambda: self.vp.del_audio(name=n))
                 self.q.put(("call", refresh_lib))
 
         def upload():
@@ -445,7 +445,7 @@ class App:
             def task():
                 try:
                     for p in paths:
-                        self.q.put(("log", self.vp.upload_audio(p)))
+                        self.q.put(("log", self.vp.upload_audio(path=p)))
                         pl_items.append({"title": os.path.splitext(os.path.basename(p))[0],
                                          "artist": "", "album": "vphone乐库", "dur": 0,
                                          "path": os.path.basename(p)})
@@ -471,7 +471,7 @@ class App:
         if not name:
             self.log("!! 先在下拉框选一个音频(空则点「↻刷新」)")
             return
-        self._run(lambda: self.vp.call_audio(name, loop=loop))
+        self._run(lambda: self.vp.call_audio(name=name, loop=loop))
 
     def _refresh_caudio(self):
         """刷新通话音频下拉框(取手机乐库文件名)。"""
@@ -494,12 +494,12 @@ class App:
         if not n:
             self.log("!! 先填新蓝牙名")
             return
-        self._run(lambda: self.vp.bt_name(n))
+        self._run(lambda: self.vp.bt_name(name=n))
 
     def _pos_release(self, _e=None):
         self._pos_drag = False
         v = int(self.scale_pos.get())
-        self._run(lambda: self.vp.media_seek(v))
+        self._run(lambda: self.vp.media_seek(sec=v))
 
     def _stat_poll(self, gen):
         """后台线程: 1s 刷新"当前曲目/时间"行 —— 车机切歌后 GUI 立即跟上。
@@ -538,7 +538,7 @@ class App:
         def task():
             try:
                 self.q.put(("log", f"批量写入 {n} 个联系人(1w 约几十秒)…"))
-                self.q.put(("log", self.vp.contacts_load(n)))
+                self.q.put(("log", self.vp.contacts_load(count=n)))
                 self.q.put(("log", self.vp.contacts_count()))
             except Exception as e:
                 self.q.put(("log", f"[错误] {e}"))
@@ -567,19 +567,19 @@ class App:
         """列表选中了设备就重连它; 没选就自动重连第一台已配对设备。"""
         sel = self.lb_bt.curselection()
         target = self.bt_devs[sel[0]]["mac"] if sel else None
-        self._run(lambda: self.vp.bt_reconnect(target))
+        self._run(lambda: self.vp.bt_reconnect(target=target))
 
     def _disconnect_sel(self):
         """断开选中设备(没选=当前已连接那台), 保持配对 —— 车机断连/回连测试用。"""
         sel = self.lb_bt.curselection()
         target = self.bt_devs[sel[0]]["mac"] if sel else None
-        self._run(lambda: self.vp.bt_disconnect(target))
+        self._run(lambda: self.vp.bt_disconnect(mac=target))
 
     def _allow_car_sel(self):
         """授权选中设备(或第一台已连HFP设备)访问联系人/通话记录(PBAP)。"""
         sel = self.lb_bt.curselection()
         target = self.bt_devs[sel[0]]["mac"] if sel else None
-        self._run(lambda: self.vp.bt_allow_car(target))
+        self._run(lambda: self.vp.bt_allow_car(target=target))
 
     def _scan(self):
         if self.vp is None:
@@ -605,12 +605,12 @@ class App:
     def _bond_sel(self):
         d = self._sel_dev()
         if d:
-            self._run(lambda: self.vp.bt_bond(d["mac"]))
+            self._run(lambda: self.vp.bt_bond(target=d["mac"]))
 
     def _unpair_sel(self):
         d = self._sel_dev()
         if d:
-            self._run(lambda: self.vp.bt_unpair(d["mac"]))
+            self._run(lambda: self.vp.bt_unpair(target=d["mac"]))
 
     # ---------- 事件轮询(结构化 /events) ----------
     def _evt_poll(self, gen):
@@ -621,14 +621,14 @@ class App:
         fail = 0
         while not self._evt_stop.is_set() and self._gen == gen:
             try:
-                r = self.vp.events(since=last)
+                r = self.vp.events_raw(since=last)
                 last = r["last"]
                 fail = 0
                 if first:   # 首拉只对齐水位
                     first = False
                 else:
-                    for e in r["events"]:
-                        self.q.put(("tevt", e))
+                    for d in r["events"]:
+                        self.q.put(("tevt", VEvent._of(d)))
             except Exception:
                 fail += 1
                 if fail >= 3:
@@ -653,11 +653,10 @@ class App:
                     tag = "bt" if "[蓝牙]" in payload else None
                     self.log(payload, tag=tag)
                 elif kind == "tevt":
-                    e = payload
-                    ts = time.strftime("%H:%M:%S", time.localtime(e["ts"] / 1000))
-                    mark = "🚗" if e["src"] == "car" else ("⌨" if e["src"] == "cmd" else " ")
-                    tag = "car" if e["src"] == "car" else ("bt" if e["type"].startswith("BT_") else "cmd")
-                    self.log(f'{mark} {ts} #{e["id"]} {e["type"]} {e["detail"]}', tag=tag)
+                    e = payload   # VEvent(结构化, 字段固定)
+                    mark = "🚗" if e.src == "car" else ("⌨" if e.src == "cmd" else " ")
+                    tag = "car" if e.src == "car" else ("bt" if e.type.startswith("BT_") else "cmd")
+                    self.log(f"{mark} {e}", tag=tag)
                 elif kind == "ready":
                     old, self.vp = self.vp, payload
                     if old is not None:
@@ -676,7 +675,7 @@ class App:
                     self._run(self.vp.enable_autoconfirm)
                     # 车机拨出接通模式以勾选框为准(主线程先取值, 默认手动接通)
                     auto_on = self.var_autoout.get()
-                    self._run(lambda: self.vp.set_auto_outgoing(auto_on))
+                    self._run(lambda: self.vp.set_auto_outgoing(on=auto_on))
                     self._contacts_refresh()
                     self._refresh_caudio()
                     # 代际+1: 旧的 _evt_poll/_stat_poll 线程检测到后代不符即自退,

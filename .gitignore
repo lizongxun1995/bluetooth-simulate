@@ -16,6 +16,10 @@ firmware/managed_components/
 vphone/.gradle/
 vphone/local.properties
 
+# vphone (Python wheel 构建产物; APK 真源仍是 vphone/apk/)
+vphone/dist_py/
+vphone/vphone_data/apk/
+
 # windemo (C#)
 windemo/bin/
 windemo/obj/

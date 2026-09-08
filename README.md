@@ -24,27 +24,31 @@
 
 ```bash
 # 换机器免装版: vphone/dist/vphone_gui.exe 双击（唯一前提=手机 USB 驱动）
-# 开发机:
+# 开发机(三种任选):
+pip install vphone/dist_py/vphone-0.6.0-py3-none-any.whl   # 装库+CLI+GUI 命令, 零第三方依赖
 cd vphone
 python vphone_ctl.py --serial <手机序列号> install   # 装机并拉起服务(华为可能要点安装确认)
-python vphone_gui.py --serial <手机序列号>            # 图形控制台
+python vphone_gui.py --serial <手机序列号>            # 图形控制台(或命令 vphone-gui)
 ```
 
-测试脚本（推荐入口 `vphone/vphone_lib.py`）：
+测试脚本（推荐入口 `vphone_lib`，pip 装完 import 名不变）：
 
 ```python
 from vphone_lib import VPhone
-vp = VPhone(serial="SN_PHONE_A")
+vp = VPhone(serial="SN_PHONE_A", wait_timeout=20)
 
-vp.incoming("13800138000")                          # 注入来电(车机+手机同时响)
-assert vp.wait_event("CAR_ANSWER", timeout=15)      # 有人在车机上按了接听
+vp.incoming(number="13800138000")                     # 注入来电(车机+手机同时响)
+vp.expect_event(evt_type="CAR_ANSWER")                # 车机接听断言(超时抛异常带现场)
 vp.hangup()
 
-vp.play_audio_files(["D:/music/a.mp3"])             # 上传+播放(车机真出声)
-assert vp.wait_event(("CAR_NEXT", "CAR_PREV"), timeout=15)
+vp.play_audio_files(paths=["D:/music/a.mp3"])         # 上传+播放(车机真出声)
+vp.expect_event(evt_type=("CAR_NEXT", "CAR_PREV"))
 
-vp.contacts_load(10000)                             # 1w 联系人→车机通讯录压测
+vp.contacts_load(count=10000)                         # 1w 联系人→车机通讯录压测
 ```
+
+> v0.6.0 起公开方法全部 keyword-only（调用必须写参数名），事件断言返回 VEvent
+> 结构化对象。详见 [vphone 接口文档](docs/vphone-API.md) §0/§2.6。
 
 ## 目录结构
 

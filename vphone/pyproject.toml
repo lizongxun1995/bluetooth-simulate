@@ -1,0 +1,29 @@
+# vphone Python 包(库+CLI+GUI): pip install 后 from vphone_lib import VPhone 即用。
+# 版本单一真源在 vphone_lib.__version__(dynamic attr 引用) —— 发版只改那一处。
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vphone"
+dynamic = ["version"]
+description = "把 Android 手机变成 PC 可远程驱动的蓝牙虚拟手机(车载蓝牙测试: A2DP媒体/HFP电话/PBAP联系人)"
+requires-python = ">=3.9"
+# 运行时零第三方依赖(纯标准库; GUI 用自带的 tkinter) —— 审计见 test_lib.py/audit_deps
+dependencies = []
+authors = [{ name = "lizongxuan" }]
+
+[project.scripts]
+vphone = "vphone_ctl:main"        # CLI: vphone --help
+vphone-gui = "vphone_gui:main"    # GUI: vphone-gui
+
+# 平铺模块(导入名保持 vphone_lib, 既有脚本零改动) + 资源包(APK 随 wheel 分发)
+[tool.setuptools]
+py-modules = ["vphone_lib", "vphone_ctl", "vphone_gui"]
+packages = ["vphone_data"]
+
+[tool.setuptools.package-data]
+vphone_data = ["apk/*.apk"]
+
+[tool.setuptools.dynamic]
+version = { attr = "vphone_lib.__version__" }

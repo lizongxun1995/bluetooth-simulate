@@ -839,3 +839,29 @@ windowed exe 无自己的控制台, Windows 会给每个 adb 子进程新弹一�
 勾选框默认勾上。改: 勾选框默认不勾(手动), 连接时按勾选框状态同步, 「接听」按钮更名
 「接听/接通」(来电 ringing 和拨号态 dialing 通用)。CLI/脚本行为不变(APK 默认仍自动,
 要手动自己 set_auto_outgoing(False))。exe 已重建。
+
+**追加：vphone 第六轮补3 —— 库 v0.6.0: 全 kwargs + 结构化断言 + pip 打包**
+
+用户三点诉求(参数 kwargs 风格方便演进兼容/断言数据结构化/打成可安装 python 包)一次落地:
+
+- **全 kwargs**: 全部公开方法签名加 `*`(签名契约测试验证 76 个参数全 KEYWORD_ONLY, 含
+  `__init__`), 位置调用直接 TypeError。唯一例外是传输原语 http/http_post/broadcast/cmd
+  的主判别参数(同 open(path) 道理)。ctl/gui/库内部 ~50 处调用点全部同步。
+- **三层断言 API**(回答"断言是否阻塞/是否超时"): events() 快照非阻塞 / wait_event() 阻塞
+  原语超时返 None / expect_event(..., because="") 超时抛 VPhoneTimeoutError(消息带过滤
+  条件+because+窗口内最近 8 条事件, 失败现场直接可查) / expect_no_event(within=N) 反向
+  断言命中即抛。不支持无限等待: timeout=None→实例默认 VPhone(wait_timeout=15), timeout=0
+  =单次快照探一眼。设计动机: 裸 assert vp.wait_event(...) 有 python -O 剥 assert、忘写
+  assert 吞 None 两个坑。
+- **VEvent 冻结数据类**(id/ts/type/src/detail, 字段只增不改名)取代裸 dict; .time 属性出
+  "HH:MM:SS", __str__ 出 "#12 14:03:22 CAR_ANSWER [car] ..."。原 events() 的裸信封
+  {'last','events'} 下沉为 events_raw()(GUI/ctl 轮询器用), 新增 event_watermark()。
+  VPhoneTimeoutError(VPhoneError) 子类, 既有 except 不受影响。
+- **pip wheel**: pyproject.toml(setuptools, 纯 stdlib 零运行时依赖, 版本单一真源
+  vphone_lib.__version__=0.6.0), py-modules 导入名不变(vphone_lib, 既有脚本零改动),
+  APK 随包走 vphone_data 包(build_py.py 构建时同步, 产物 gitignore, 真源仍是 apk/),
+  入口点 vphone/vphone-gui, default_apk() 查找链加 importlib.resources 一环。
+  wheel 已在干净 venv 验证: site-packages 导入/版本/APK 落位/两个入口命令。
+- 验证: 新增 vphone/test_lib.py 无设备单测 8 组全绿(monkeypatch http 的 fake 严格模拟
+  since 水位过滤——初版 fake 不滤 since 导致假失败, 修正后全过); exe 已重建。
+- 挂账: 设备冒烟(dial→expect_event/水位回放/GUI 事件流)待华为手机重新插线后补。

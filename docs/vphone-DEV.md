@@ -76,6 +76,13 @@ cp vphone/app/build/outputs/apk/debug/app-debug.apk vphone/apk/vphone.apk   # �
 # exe（内嵌 apk + adb）
 cd vphone && python build_exe.py    # → dist/vphone_gui.exe (~13MB)
 
+# pip wheel（APK 随包分发; 导入名 vphone_lib 不变, 零第三方依赖）
+cd vphone && python build_py.py     # → dist_py/vphone-<版本>-py3-none-any.whl
+# 版本单一真源 = vphone_lib.__version__（pyproject dynamic attr 引用）; 改版本只改这一处。
+# APK 在构建时同步进 vphone_data/（产物已 gitignore, 真源仍是 apk/vphone.apk）。
+# 验证(新 venv): pip install 装出的 wheel → from vphone_lib import VPhone;
+#   VPhone.default_apk() 指向 site-packages 的 vphone_data/apk/; vphone --help / vphone-gui --help。
+
 # 装机（记得华为确认框）
 adb -s SN_PHONE_A shell am force-stop com.android.packageinstaller
 adb -s SN_PHONE_A install -r vphone/apk/vphone.apk

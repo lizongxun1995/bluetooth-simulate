@@ -4,28 +4,36 @@
 
 一台 Android 手机装上 vphone APK 后, 即成为 PC 可远程驱动的蓝牙测试终端:
   门B(媒体): set_track/playlist/play/pause/next/prev + upload_audio(电脑音频→车机播放)
-             + 车机按键回流(wait_event CAR_PLAY/CAR_NEXT/...)
+             + 车机按键回流(expect_event CAR_PLAY/CAR_NEXT/...)
   门C(电话): incoming/dial/answer/hangup/hold/dtmf/audio_bt + call_audio(通话中自定义音频)
-             + 车机接听/挂断回流(wait_event CAR_ANSWER/CAR_HANGUP/CAR_DIAL/...)
+             + 车机接听/挂断回流(expect_event CAR_ANSWER/CAR_HANGUP/CAR_DIAL/...)
   联系人:    contacts_load(批量1w)/contacts_import(自定义)/contacts_clear —— PBAP 测车机通讯录
   蓝牙:      bt_scan/bt_bond/bt_unpair/bt_reconnect/bt_state/bt_enable (配对不出App)
   部署:      install() 更新APK并自动拉起 + grant_perms() 授权 + enable_autoconfirm()
 
+── API 稳定性约定 ──
+  · 全部公开方法 keyword-only(签名带 *): 后续版本插入新参数不会破坏既有调用;
+  · 事件断言三层: events()(快照,非阻塞) / wait_event()(阻塞原语,超时返回None)
+    / expect_event()+expect_no_event()(断言版, 超时/命中抛 VPhoneTimeoutError, 消息带上下文);
+  · VEvent 为 frozen dataclass, 字段只增不改名(id/ts/type/src/detail)。
+
 传输: 默认 adb forward(USB, 127.0.0.1:18800 → 手机 8800); 同 WiFi 可 base="http://手机IP:8800"。
-事件: 结构化事件总线 /events(type/src/detail, App 内 EventLog) —— wait_event() 断言首选;
-      start_events()/wait_for() 收 logcat 文本, 兼容保留。
+兼容: start_events()/wait_for() 收 logcat 文本, 旧脚本保留。
 
 示例:
     from vphone_lib import VPhone
-    vp = VPhone(serial="SN_PHONE_A")
-    vp.incoming("13800138000")
-    assert vp.wait_event("CAR_ANSWER", timeout=15)     # 有人在车机上按了接听
+    vp = VPhone(serial="SN_PHONE_A", wait_timeout=20)
+    mark = vp.event_watermark()            # 水位: 之后发生的事才算数
+    vp.incoming(number="13800138000")
+    vp.expect_event(evt_type="CAR_ANSWER", since=mark)   # 有人在车机上按了接听(超时抛异常)
     vp.hangup()
-    vp.upload_audio("D:/music/demo.mp3"); vp.play_audio_files(["D:/music/demo.mp3"])
-    assert vp.wait_event("CAR_NEXT", timeout=15)       # 车机上按了下一曲
-    vp.contacts_load(10000)                            # 1w 联系人→车机通讯录压测
+    vp.upload_audio(path="D:/music/demo.mp3"); vp.play_audio_files(paths=["D:/music/demo.mp3"])
+    vp.expect_event(evt_type=("CAR_NEXT", "CAR_PREV"))   # 车机上按了上一曲/下一曲
+    vp.contacts_load(count=10000)                          # 1w 联系人→车机通讯录压测
 """
+import dataclasses
 import glob
+import json
 import os
 import re
 import subprocess
@@ -41,6 +49,8 @@ REMOTE_PORT = 8800
 DEFAULT_LOCAL_PORT = 18800   # PC 侧 forward 端口(避开本机 8800 常见占用)
 ACCOUNT_ARGS = f"{PKG}/.VPhoneConnectionService VPHONE 0".split()
 
+__version__ = "0.6.0"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
+
 
 # Windows: GUI(windowed exe)无控制台时, 每个 adb 子进程都会新弹一个黑窗 ——
 # 所有子进程统一带 CREATE_NO_WINDOW(仅 Windows 有此标志; 输出仍走管道不受影响)。
@@ -51,8 +61,39 @@ class VPhoneError(RuntimeError):
     pass
 
 
+class VPhoneTimeoutError(VPhoneError):
+    """断言类 API(expect_event/expect_no_event)超时/意外命中时抛出 —— VPhoneError 子类,
+    既有 `except VPhoneError` 兜底逻辑不受影响。"""
+
+
+@dataclasses.dataclass(frozen=True)
+class VEvent:
+    """结构化事件(手机端 EventLog → /events 拉取)的固定形态。
+    字段契约: 只增不改名 —— 断言代码可长期依赖。"""
+    id: int        # 递增序号, 兼作水位(events(since=id) 取之后的事件)
+    ts: int        # 手机时钟 epoch 毫秒
+    type: str      # 事件类型(英文稳定): CAR_ANSWER/CAR_NEXT/BT_A2DP_CONNECTED/... 全表见 docs/vphone-API.md
+    src: str       # 来源: car=车机按键  cmd=PC指令  app=App内部  bt=蓝牙栈  sys=系统Telecom侧
+    detail: str    # 人读中文描述
+
+    @property
+    def time(self) -> str:
+        """本地时间 HH:MM:SS(按 PC 时区换算, 人读用)。"""
+        return time.strftime("%H:%M:%S", time.localtime(self.ts / 1000))
+
+    def __str__(self):
+        return f"#{self.id} {self.time} {self.type} [{self.src}] {self.detail}"
+
+    @classmethod
+    def _of(cls, d: dict) -> "VEvent":
+        """从 /events 的 JSON dict 构造(缺字段容错为空值, 不抛)。"""
+        return cls(id=int(d.get("id") or 0), ts=int(d.get("ts") or 0),
+                   type=str(d.get("type") or ""), src=str(d.get("src") or ""),
+                   detail=str(d.get("detail") or ""))
+
+
 def default_apk():
-    """默认安装包: 优先 exe/脚本自带(打包发行/克隆即装), 回退 gradle 构建产物。"""
+    """默认安装包查找链: exe/脚本自带 → 源码仓 apk/ → pip 安装的 vphone_data 包 → gradle 产物。"""
     base = os.path.dirname(os.path.abspath(__file__))
     for d in _bundle_dirs() + [base]:
         hits = sorted(
@@ -60,6 +101,15 @@ def default_apk():
             key=os.path.getmtime, reverse=True)
         if hits:
             return hits[0]
+    # pip install 装的 wheel: APK 在 vphone_data 包里(importlib.resources 定位, 免猜 site-packages)
+    try:
+        import importlib.resources
+        with importlib.resources.files("vphone_data").joinpath("apk") as d:
+            hits = sorted(p for p in d.iterdir() if p.name.endswith(".apk"))
+            if hits:
+                return str(hits[-1])
+    except Exception:
+        pass
     b = os.path.join(base, "app", "build", "outputs", "apk", "debug", "app-debug.apk")
     return b if os.path.isfile(b) else None
 
@@ -151,8 +201,12 @@ def _find_adb(adb="adb"):
 class VPhone:
     """一台运行 vphone APK 的手机。所有方法返回手机端的结果文本(中文)。"""
 
-    def __init__(self, serial=None, base=None, port=DEFAULT_LOCAL_PORT,
-                 adb="adb", autostart=True):
+    def __init__(self, *, serial=None, base=None, port=DEFAULT_LOCAL_PORT,
+                 adb="adb", autostart=True, wait_timeout=15):
+        """serial=手机序列号(多设备必填; base 直连 WiFi 时不需要)。
+        wait_timeout=断言类方法(wait_event/expect_event/expect_no_event)的默认超时秒数
+        —— 慢台架构造时调一次全局生效, 调用处仍可用 timeout=/within= 单点覆盖。
+        注意: 不支持无限等待; timeout=0 语义是"只查一次快照立即返回"(非阻塞探一眼)。"""
         self.adb_path = _find_adb(adb)
         self.serial = serial  # None → _adb 不带 -s; 多设备时在 _pick_serial 里选定
         if not self.serial:
@@ -160,6 +214,7 @@ class VPhone:
         self._base = base
         self._port = port
         self._forward_ok = False
+        self.wait_timeout = wait_timeout
         if not base:
             self._setup_forward()
         if autostart:
@@ -220,8 +275,9 @@ class VPhone:
         """控制面基地址: 直连 WiFi 时为传入的 base, 否则走 adb forward 本机端口。"""
         return self._base or f"http://127.0.0.1:{self._port}"
 
-    def http(self, path, timeout=6, **params) -> str:
+    def http(self, path, *, timeout=6, **params) -> str:
         """HTTP 直连手机控制面, 返回纯文本结果; 失败抛 VPhoneError(保留原始异常)。
+        path 保留位置传法(单一稳定判别参数, 同 open(path)); 其余全部 keyword-only。
         仅此方法+http_post 走 HTTP —— 无广播兜底(见 cmd() 的双通道契约)。"""
         url = self.base + path
         if params:
@@ -232,7 +288,7 @@ class VPhone:
         except Exception as e:
             raise VPhoneError(f"HTTP 不通[{path}]: {e} (服务起了吗? adb forward 通吗?)") from e
 
-    def http_post(self, path, data: bytes, timeout=120, **params) -> str:
+    def http_post(self, path, data: bytes, *, timeout=120, **params) -> str:
         """POST 二进制体(/media/upload 推音频用); 失败抛 VPhoneError。"""
         url = self.base + path
         if params:
@@ -331,12 +387,12 @@ class VPhone:
 
     # ================= 门C: 电话 =================
 
-    def incoming(self, number="13800138000") -> str:
+    def incoming(self, *, number="13800138000") -> str:
         """注入来电(Telecom 注入连接, 手机+已连车机同时响铃)。可控可重复,
         替代真机"打电话过来"。失败(账号未启用等)自动回滚 idle 并在返回文本里说明原因。"""
         return self.cmd("incoming", number=number)
 
-    def dial(self, number="10086") -> str:
+    def dial(self, *, number="10086") -> str:
         """模拟本机拨号(手机侧发起, 车机上表现为去电界面)。
         对端默认 3s 自动接通 —— 见 set_auto_outgoing()。"""
         return self.cmd("dial", number=number)
@@ -349,11 +405,11 @@ class VPhone:
         """挂断当前通话(任意状态), 状态机复位 idle。车机侧挂断回流为 CAR_HANGUP。"""
         return self.cmd("hangup")
 
-    def hold(self, on=True) -> str:
+    def hold(self, *, on=True) -> str:
         """通话保持/恢复。on=True 保持(车机界面显示"保持中")。"""
         return self.cmd("hold", on="1" if on else "0")
 
-    def dtmf(self, key) -> str:
+    def dtmf(self, *, key) -> str:
         """发送 DTMF 按键(key='0'-'9','*','#'; 需 active 通话)。
         车机侧按键回流为 CAR_DTMF 事件。"""
         return self.cmd("dtmf", key=key)
@@ -362,11 +418,11 @@ class VPhone:
         """通话音频切到蓝牙 SCO(等价用户在手机上选"蓝牙接听")。"""
         return self.cmd("audio_bt")
 
-    def set_auto_outgoing(self, on=True) -> str:
+    def set_auto_outgoing(self, *, on=True) -> str:
         """车机拨出(ATD)后是否 3s 自动接通(模拟对端摘机)。默认开。"""
         return self.cmd("auto_outgoing", on="1" if on else "0")
 
-    def call_audio(self, name, loop=False) -> str:
+    def call_audio(self, *, name, loop=False) -> str:
         """通话中向车机播放自定义音频(模拟"对端说话", SCO 下行)。
         name=乐库文件名(先 upload_audio); 需先有 active 通话(车机接听/answer)。"""
         return self.cmd("call_audio", name=name, loop="1" if loop else "0")
@@ -385,7 +441,7 @@ class VPhone:
         except VPhoneError as e:
             raise VPhoneError(f"等待联系人任务时 HTTP 中断(USB掉线?): {e}") from e
 
-    def contacts_load(self, count=10000, prefix="联系人", wait=True, timeout=300) -> str:
+    def contacts_load(self, *, count=10000, prefix="联系人", wait=True, timeout=300) -> str:
         """批量生成联系人(联系人00001/13800000001...)写入系统通讯录 → 车机 PBAP 可拉取。
         1w 个约 10~30s; wait=True 轮询到完成并返回最终计数。
         注意: clear/load 是异步批量任务 —— 上一任务没跑完就发下一任务是"批量任务进行中"报错。"""
@@ -400,7 +456,7 @@ class VPhone:
             time.sleep(1.5)
         return r + "\n(等待完成超时, 最新: " + self._contacts_status() + ")"
 
-    def contacts_import(self, text=None, file=None, wait=True, timeout=300) -> str:
+    def contacts_import(self, *, text=None, file=None, wait=True, timeout=300) -> str:
         """导入自定义联系人: 每行 '姓名|号码' 或 '姓名,号码'。text 直传或 file 读文件。
         wait=True 轮询到写入完成(异步批量任务, 语义同 contacts_load)。"""
         if file:
@@ -417,7 +473,7 @@ class VPhone:
             time.sleep(1.5)
         return r + "\n(等待完成超时, 最新: " + self._contacts_status() + ")"
 
-    def contacts_clear(self, wait=True, timeout=120) -> str:
+    def contacts_clear(self, *, wait=True, timeout=120) -> str:
         """清空 vphone 写入的联系人(只删本账号, 不动手机原有)。同样要等 idle。"""
         r = self.cmd("contacts_clear")
         if not wait:
@@ -435,12 +491,12 @@ class VPhone:
 
     # ================= 门B: 媒体 =================
 
-    def set_track(self, title, artist="", album="", dur=240) -> str:
+    def set_track(self, *, title, artist="", album="", dur=240) -> str:
         """设置单曲元数据(不真出声 —— 标题/歌手/时长皆可伪造, 测车机显示与进度条)。
         真实出声请用 upload_audio()+playlist_audio()。dur 单位秒。"""
         return self.cmd("track", title=title, artist=artist, album=album, duration=dur)
 
-    def playlist(self, text=None, file=None) -> str:
+    def playlist(self, *, text=None, file=None) -> str:
         """播放列表: text 多行/分号分隔 '标题|歌手|专辑|秒'; file 读文件。
         都不给 = 查询当前播放列表(同格式回读)。"""
         if file:
@@ -465,11 +521,11 @@ class VPhone:
             })
         return items
 
-    def media_jump(self, idx) -> str:
+    def media_jump(self, *, idx) -> str:
         """跳到播放列表第 idx 首(0 起)并按当前播放/暂停态就位。"""
         return self.cmd("jump", idx=int(idx))
 
-    def media_seek(self, sec) -> str:
+    def media_seek(self, *, sec) -> str:
         """拖动播放进度到第 sec 秒(车机进度条跟随; 车机侧拖动回流为 CAR_SEEK 事件)。"""
         return self.cmd("seek", pos=int(sec))
 
@@ -494,19 +550,19 @@ class VPhone:
         GUI 进度条轮询专用(轻量, 不带 /status 的四引擎汇总)。仅 HTTP 通道。"""
         return self.http("/media/status")
 
-    def silence(self, on=True) -> str:
+    def silence(self, *, on=True) -> str:
         """静音流模式开关。on=True 不真实解码, 用静音帧维持 A2DP 链路(测元数据/按键,
         不测音质); off=用上传的音频文件真实解码。静音模式下进度由秒表模拟,
         单曲播完即停(与真机播放器一致, 不原地循环)。"""
         return self.cmd("silence", on="1" if on else "0")
 
-    def autoadvance(self, on=True) -> str:
+    def autoadvance(self, *, on=True) -> str:
         """单曲播完是否自动进下一曲(默认开; 关掉可测"播完即停"的车机表现)。"""
         return self.cmd("autoadvance", on="1" if on else "0")
 
     # ---------- 乐库: 电脑音频 → 手机 → 车机真实播放 ----------
 
-    def upload_audio(self, path, name=None) -> str:
+    def upload_audio(self, *, path, name=None) -> str:
         """把电脑上的音频文件(mp3/wav/flac/m4a/aac/ogg)推到手机乐库(POST /media/upload)。
         上传后播放列表第 5 列引用文件名即真实出声(元数据仍可伪造)。"""
         path = os.path.abspath(path)
@@ -530,7 +586,7 @@ class VPhone:
                 devs.append({"name": n.strip(), "kb": kb.replace("KB", "").strip()})
         return devs
 
-    def del_audio(self, name) -> str:
+    def del_audio(self, *, name) -> str:
         """删除乐库音频文件(name 见 list_audio())。"""
         return self.cmd("del", name=name)
 
@@ -538,7 +594,7 @@ class VPhone:
         """音质/断续排查: 实际输出设备(A2DP/SCO)+绑定情况+SCO占用一目了然。"""
         return self.cmd("diag")
 
-    def playlist_audio(self, names, meta=None, autoplay=True) -> str:
+    def playlist_audio(self, *, names, meta=None, autoplay=True) -> str:
         """用乐库文件名构造真实音频播放列表并(可选)播放。
         names: 乐库文件名列表; meta: 可选 [(标题,歌手,专辑), ...] 与 names 对齐, 缺省用文件名。"""
         lines = []
@@ -550,14 +606,14 @@ class VPhone:
         r = self.cmd("playlist", text=";".join(lines))
         return r + (("\n" + self.play()) if autoplay else "")
 
-    def play_audio_files(self, paths, autoplay=True) -> str:
+    def play_audio_files(self, *, paths, autoplay=True) -> str:
         """一步到位: 电脑选音频文件 → 逐个上传 → 生成播放列表 → 播放(车机真放出声)。"""
         outs = []
         names = []
         for p in paths:
-            outs.append(self.upload_audio(p))
+            outs.append(self.upload_audio(path=p))
             names.append(os.path.basename(p))
-        outs.append(self.playlist_audio(names, autoplay=autoplay))
+        outs.append(self.playlist_audio(names=names, autoplay=autoplay))
         return "\n".join(outs)
 
     # ================= 蓝牙: 扫描/配对 =================
@@ -566,13 +622,13 @@ class VPhone:
         """蓝牙开关 + 已配对列表 + [A2DP已连]/[HFP已连] 标记(台架判定证据)。"""
         return self.cmd("bt_state")
 
-    def bt_scan(self, timeout=20) -> list:
+    def bt_scan(self, *, timeout=20) -> list:
         """触发扫描并等结束, 返回 [{'name','mac','rssi'}] 按信号强度降序。
         扫描不出结果多为: 手机定位服务未开(Android 权限模型)或权限未授 —— 报错里提示。"""
         r = self.cmd("scan")
         if "扫描已启动" not in r:
             raise VPhoneError(r)
-        ended = self.wait_for("扫描结束", timeout=timeout)
+        ended = self.wait_for(pattern="扫描结束", timeout=timeout)
         out = self.cmd("scan_result")
         if not ended and "|" not in out:
             raise VPhoneError(
@@ -584,15 +640,15 @@ class VPhone:
                 devs.append({"name": parts[0], "mac": parts[1], "rssi": int(parts[2])})
         return devs
 
-    def bt_bond(self, target) -> str:
+    def bt_bond(self, *, target) -> str:
         """发起配对: target=MAC 或名字片段(如 'CARKIT-1' / '00:11:22:33:44:55')。"""
         return self.cmd("bond", mac=target)
 
-    def bt_unpair(self, target) -> str:
+    def bt_unpair(self, *, target) -> str:
         """解除配对(车机端设备消失, 模拟用户删除配对)。target=MAC 或名字片段。"""
         return self.cmd("unpair", mac=target)
 
-    def bt_disconnect(self, mac=None, force=False) -> str:
+    def bt_disconnect(self, *, mac=None, force=False) -> str:
         """断开与设备的蓝牙连接(保持配对) —— 车机断连/回连测试场景。
         mac=None 时自动选当前已连接(A2DP/HFP)那台; force=反射全被系统权限拒时
         兜底直接关蓝牙。断链/回链都会落 ACL/A2DP/HFP 结构化事件可断言。"""
@@ -613,7 +669,7 @@ class VPhone:
                     return m.group(0)
         return None
 
-    def bt_reconnect(self, target=None, fallback=True) -> str:
+    def bt_reconnect(self, *, target=None, fallback=True) -> str:
         """断线重连(手机侧主动发起)。target=None 时自动选第一台已配对设备(正则抠 MAC)。
         返回文本含各条路径结果; 连上与否用 wait_profile(target) 断言。"""
         if target is None:
@@ -622,11 +678,11 @@ class VPhone:
                 return "(无已配对设备, 先 bt_bond)"
         return self.cmd("reconnect", mac=target, fallback="1" if fallback else "0")
 
-    def bt_name(self, name=None) -> str:
+    def bt_name(self, *, name=None) -> str:
         """查看/修改本机蓝牙名(车机上显示的手机名)。name=None 只查询。"""
         return self.cmd("bt_name", name=name) if name else self.cmd("bt_name")
 
-    def bt_allow_car(self, target=None) -> str:
+    def bt_allow_car(self, *, target=None) -> str:
         """授权车机访问联系人/通话记录(PBAP/MAP) —— 车机能拉通讯录的前提。
         target=None 时自动选第一台带 [HFP已连] 的设备。反射失败时返回手动路径指引。"""
         if target is None:
@@ -635,13 +691,13 @@ class VPhone:
                 return "(没找到已连 HFP 的设备, 传 target=MAC 或先连接)"
         return self.cmd("allow_car", mac=target)
 
-    def bt_enable(self, on=True) -> str:
+    def bt_enable(self, *, on=True) -> str:
         """开/关手机蓝牙。on=False 关蓝牙 —— 模拟用户关蓝牙时车机的断连表现。"""
         return self.cmd("bt_enable", on="1" if on else "0")
 
     # ================= 部署 =================
 
-    def install(self, apk=None, timeout=120) -> str:
+    def install(self, *, apk=None, timeout=120) -> str:
         """adb install -r + 装完自动拉起服务/重建 forward。
         apk 默认取 vphone/apk/ 打包产物(仓库自带, 换机器克隆即装), 无则取构建产物。
         注意: 部分厂商手机仍会弹一次安装确认(厂商差异大, 不做自动点屏, 需手动点一下)。"""
@@ -694,44 +750,114 @@ class VPhone:
     # ================= 事件流/断言辅助 =================
 
     # ---------- 首选: 结构化事件总线(App 内 EventLog, /events JSON) ----------
+    # 三层断言设计:
+    #   events()         快照查询 —— 非阻塞, 立即返回 list[VEvent];
+    #   wait_event()     阻塞原语 —— 超时返回 None(可组合自定义流程);
+    #   expect_event()   断言版   —— 超时抛 VPhoneTimeoutError, 消息带"等待窗口内实际事件";
+    #   expect_no_event() 反向断言 —— 观察窗口内命中即抛(测"不该发生的事")。
+    # 超时规则: 不支持无限等待。timeout=None(默认)=用实例默认 VPhone(wait_timeout=15);
+    #           timeout=0 = 只查一次快照立即返回(非阻塞"探一眼")。
 
-    def events(self, since=0) -> dict:
-        """拉取手机端结构化事件: {'last':N, 'events':[{'id','ts','type','src','detail'}]}。
+    def events_raw(self, *, since=0) -> dict:
+        """原始事件信封: {'last':N, 'events':[{'id','ts','type','src','detail'}, ...]}。
+        id>N 的事件; last=当前水位。GUI 轮询等需要水位+列表一起拿的场景用这个,
+        断言/业务代码请用 events()/wait_event()/expect_event()。"""
+        return json.loads(self.http("/events", since=since))
+
+    def events(self, *, since=0) -> list:
+        """拉取手机端结构化事件快照(非阻塞): [VEvent(id,ts,type,src,detail), ...]。
         常用 type: CAR_ANSWER/CAR_REJECT/CAR_HANGUP/CAR_DIAL/CAR_HOLD/CAR_DTMF(电话),
                    CAR_PLAY/CAR_PAUSE/CAR_NEXT/CAR_PREV/CAR_SEEK(媒体),
                    BT_A2DP_CONNECTED/BT_HFP_CONNECTED/...(链路), RING_IN/CALL_ACTIVE/..."""
-        import json
-        return json.loads(self.http("/events", since=since))
+        return [VEvent._of(d) for d in self.events_raw(since=since)["events"]]
 
-    def wait_event(self, evt_type=None, detail=None, src=None, timeout=15, since=None) -> dict | None:
-        """阻塞等待结构化事件, 命中返回事件 dict, 超时返回 None(可直接 assert)。
+    def event_watermark(self) -> int:
+        """当前事件水位(最新事件 id)。配合"先命令后断言":
+            mark = vp.event_watermark(); vp.next()
+            vp.expect_event(evt_type="CAR_NEXT", since=mark)   # 命令瞬间的事件不漏"""
+        return self.events_raw(since=1 << 30)["last"]
+
+    @staticmethod
+    def _match_event(e: VEvent, types, src, detail) -> bool:
+        """三层断言共用的匹配规则: type 精确(str 或 tuple 任一), src 精确, detail 子串。"""
+        if types and e.type not in types:
+            return False
+        if src and e.src != src:
+            return False
+        if detail and detail not in e.detail:
+            return False
+        return True
+
+    def _wait_scan(self, *, evt_type=None, detail=None, src=None,
+                   timeout=None, since=None):
+        """阻塞轮询 /events 直到命中, 返回 (VEvent|None, 观察窗口内全部事件)。
+        供 wait_event/expect_event/expect_no_event 共用 —— 后者需要窗口内事件做上下文。"""
+        timeout = self.wait_timeout if timeout is None else timeout
+        last = since if since is not None else self.event_watermark()
+        types = (evt_type,) if isinstance(evt_type, str) else evt_type
+        seen = []
+        deadline = time.time() + timeout
+        while True:
+            for e in self.events(since=last):
+                last = max(last, e.id)
+                seen.append(e)
+                if self._match_event(e, types, src, detail):
+                    return e, seen
+            if time.time() >= deadline:
+                return None, seen
+            time.sleep(0.3)
+
+    def wait_event(self, *, evt_type=None, detail=None, src=None,
+                   timeout=None, since=None):
+        """阻塞等待结构化事件, 命中返回 VEvent, 超时返回 None(可组合, 漏判请用 expect_event)。
         evt_type 传 str(精确匹配)或 tuple/list(任一命中); detail=子串过滤;
         src=来源过滤(car=车机按键/cmd=PC命令/app=App自身/bt=蓝牙栈/sys=系统Telecom侧)。
+        timeout: None=实例默认(VPhone(wait_timeout=)); 0=只查一次立即返回(非阻塞探一眼)。
         ── since 水位语义(重要) ──
         不传: 先取当前水位, 只等"今后发生"的事件(推荐 —— 不会被历史事件误命中);
         传 N: 从事件 id>N 起回放 —— 用于"先发命令再断言"且不想漏掉命令瞬间产生的事件。
-        例: assert vp.wait_event("CAR_ANSWER", timeout=15)
-            assert vp.wait_event(("CAR_NEXT", "CAR_PREV"), timeout=15)"""
-        last = since if since is not None else self.events()["last"]
-        types = (evt_type,) if isinstance(evt_type, str) else evt_type
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            r = self.events(since=last)
-            last = r["last"]
-            for e in r["events"]:
-                if types and e["type"] not in types:
-                    continue
-                if src and e.get("src") != src:
-                    continue
-                if detail and detail not in e.get("detail", ""):
-                    continue
-                return e
-            time.sleep(0.3)
+        例: vp.wait_event(evt_type=("CAR_NEXT", "CAR_PREV"), timeout=15)"""
+        hit, _ = self._wait_scan(evt_type=evt_type, detail=detail, src=src,
+                                 timeout=timeout, since=since)
+        return hit
+
+    def expect_event(self, *, evt_type=None, detail=None, src=None,
+                     timeout=None, since=None, because=""):
+        """断言版 wait_event: 命中返回 VEvent; 超时抛 VPhoneTimeoutError,
+        消息带过滤条件 + 等待窗口内实际发生的最近 8 条事件(失败现场直接可排查)。
+        because=本次断言的用途说明(如 "等车机接听注入来电"), 会出现在异常消息里。
+        测试脚本首选 —— 裸 assert vp.wait_event(...) 有 python -O 剥 assert、
+        忘写 assert 吞 None 两个坑, 抛异常的 expect_event 漏不掉。"""
+        hit, seen = self._wait_scan(evt_type=evt_type, detail=detail, src=src,
+                                    timeout=timeout, since=since)
+        if hit is not None:
+            return hit
+        want = f"type∈{tuple(evt_type) if isinstance(evt_type, (tuple, list)) else evt_type or '任意'}"
+        if src:
+            want += f" src={src}"
+        if detail:
+            want += f" detail~'{detail}'"
+        ctx = "\n".join(f"  {e}" for e in seen[-8:]) or "  (窗口内无任何事件)"
+        why = f"; {because}" if because else ""
+        raise VPhoneTimeoutError(
+            f"expect_event 超时{self.wait_timeout if timeout is None else timeout}s: "
+            f"{want}{why}\n等待窗口内实际事件(最近8条):\n{ctx}")
+
+    def expect_no_event(self, *, evt_type=None, detail=None, src=None,
+                        within=None, since=None):
+        """反向断言: 观察窗口 within 秒内【不该】出现匹配事件 —— 平静度过返回 None,
+        命中即抛 VPhoneTimeoutError(消息带命中的那条)。测"车机不该有反应"的场景:
+            vp.pause(); vp.expect_no_event(evt_type="CAR_PLAY", within=3)"""
+        within = self.wait_timeout if within is None else within
+        hit, _ = self._wait_scan(evt_type=evt_type, detail=detail, src=src,
+                                 timeout=within, since=since)
+        if hit is not None:
+            raise VPhoneTimeoutError(f"expect_no_event 命中(不应出现的事件): {hit}")
         return None
 
     # ---------- 兼容保留: logcat 文本事件流 ----------
 
-    def start_events(self, on_event=None):
+    def start_events(self, *, on_event=None):
         """后台线程持续收 logcat(TAG=VPhone)。重复调用幂等。
         on_event: 本次要设的回调 fn(line); 不传则保留已有回调 ——
         (此处曾无条件 on_event=None, 把 GUI 预设的回调清掉, logcat 事件通道成死代码)。"""
@@ -780,7 +906,7 @@ class VPhone:
                     pass
         self._evt_proc.wait()
 
-    def events_tail(self, n=30) -> list:
+    def events_tail(self, *, n=30) -> list:
         """最近 n 行事件(未开事件流时自动拉一次 logcat 快照)。"""
         if not getattr(self, "_evt_thread", None) or not self._evt_thread.is_alive():
             out = self._adb("logcat", "-d", "-s", "VPhone", "-t", str(n), timeout=15).stdout
@@ -788,10 +914,10 @@ class VPhone:
         with self._evt_lock:
             return [l for _, l in list(self._evt_lines)[-n:]]
 
-    def wait_for(self, pattern, timeout=10, regex=False, after_seq=None) -> str:
-        """阻塞等待事件流出现匹配行, 返回该行; 超时返回 None。
-        pattern 默认子串匹配, regex=True 时按正则。配合车机操作断言:
-            vp.incoming(); vp.wait_for("【接听】", 15)   # 有人在车机上按了接听
+    def wait_for(self, *, pattern, timeout=10, regex=False, after_seq=None) -> str:
+        """[兼容保留·logcat 文本匹配] 阻塞等待事件流出现匹配行, 返回该行; 超时返回 None。
+        pattern 默认子串匹配, regex=True 时按正则。新代码请用结构化断言 expect_event()。
+        配合车机操作断言: vp.wait_for(pattern="【接听】", timeout=15)
         """
         if not getattr(self, "_evt_thread", None) or not self._evt_thread.is_alive():
             self.start_events()
@@ -807,7 +933,7 @@ class VPhone:
             time.sleep(0.2)
         return None
 
-    def wait_bonded(self, target, timeout=25) -> bool:
+    def wait_bonded(self, *, target, timeout=25) -> bool:
         """等待目标出现在已配对列表(name 或 MAC 包含 target)。"""
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -819,7 +945,7 @@ class VPhone:
             time.sleep(1.5)
         return False
 
-    def wait_profile(self, target, profile="A2DP", timeout=25) -> bool:
+    def wait_profile(self, *, target, profile="A2DP", timeout=25) -> bool:
         """等待目标设备连上指定 profile('A2DP'/'HFP') —— /bt_state 里出 [X已连] 标记。"""
         deadline = time.time() + timeout
         want = f"[{profile}已连]"

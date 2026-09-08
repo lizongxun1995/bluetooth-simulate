@@ -35,7 +35,7 @@ import argparse
 import sys
 import time
 
-from vphone_lib import VPhone, VPhoneError
+from vphone_lib import VPhone, VPhoneError, VEvent
 
 
 def main():
@@ -85,15 +85,15 @@ def main():
             print("== 实时结构化事件 (/events, Ctrl+C 退出) ==", flush=True)
             try:
                 while True:
-                    r = vp.events(since=last)
+                    r = vp.events_raw(since=last)
                     last = r["last"]
                     if first:
                         first = False  # 首拉只对齐水位, 不倒灌历史
                         continue
-                    for e in r["events"]:
-                        ts = time.strftime("%H:%M:%S", time.localtime(e["ts"] / 1000))
-                        mark = "🚗" if e["src"] == "car" else ("⌨" if e["src"] == "cmd" else " ")
-                        print(f'{mark} {ts} #{e["id"]} {e["type"]} {e["detail"]}', flush=True)
+                    for d in r["events"]:
+                        e = VEvent._of(d)
+                        mark = "🚗" if e.src == "car" else ("⌨" if e.src == "cmd" else " ")
+                        print(f"{mark} {e}", flush=True)
                     time.sleep(0.5)
             except KeyboardInterrupt:
                 pass
@@ -101,7 +101,7 @@ def main():
             types = tuple(args.rest) or None
             e = vp.wait_event(evt_type=types, detail=args.detail, timeout=args.timeout)
             if e:
-                print(f'✓ #{e["id"]} {e["type"]} ({e["src"]}) {e["detail"]}')
+                print(f"✓ {e}")
             else:
                 sys.exit(f"!! 超时 {args.timeout}s 未等到事件 {types or '(任意)'}")
         # ---------- 部署/生命周期 ----------
@@ -115,29 +115,29 @@ def main():
             print(vp.status())
         # ---------- 电话(门C) ----------
         elif c == "incoming":
-            print(vp.incoming(args.num or "13800138000"))
+            print(vp.incoming(number=args.num or "13800138000"))
         elif c == "dial":
-            print(vp.dial(args.num or "10086"))
+            print(vp.dial(number=args.num or "10086"))
         elif c == "answer":
             print(vp.answer())
         elif c == "hangup":
             print(vp.hangup())
         elif c == "hold":
-            print(vp.hold(args.on != "0"))
+            print(vp.hold(on=args.on != "0"))
         elif c == "dtmf":
-            print(vp.dtmf(args.key or ""))
+            print(vp.dtmf(key=args.key or ""))
         elif c == "audio-bt":
             print(vp.audio_bt())
         elif c == "call-audio":
             if not args.name:
                 sys.exit("!! call-audio 需要 --name <乐库文件名> (先 upload)")
-            print(vp.call_audio(args.name, loop=args.loop))
+            print(vp.call_audio(name=args.name, loop=args.loop))
         elif c == "call-audio-stop":
             print(vp.call_audio_stop())
         # ---------- 媒体(门B) ----------
         elif c == "track":
-            print(vp.set_track(args.title or "", args.artist or "",
-                               args.album or "", args.dur or 240))
+            print(vp.set_track(title=args.title or "", artist=args.artist or "",
+                               album=args.album or "", dur=args.dur or 240))
         elif c == "play":
             print(vp.play())
         elif c == "pause":
@@ -147,9 +147,9 @@ def main():
         elif c == "prev":
             print(vp.prev())
         elif c == "silence":
-            print(vp.silence(args.on != "0"))
+            print(vp.silence(on=args.on != "0"))
         elif c == "autoadvance":
-            print(vp.autoadvance(args.on != "0"))
+            print(vp.autoadvance(on=args.on != "0"))
         elif c == "playlist":
             print(vp.playlist(text=args.text, file=args.file))   # 无参=查询当前列表
         elif c == "playlist-get":
@@ -161,33 +161,33 @@ def main():
         elif c == "jump":
             if not args.rest:
                 sys.exit("!! 用法: jump <序号从0起>")
-            print(vp.media_jump(int(args.rest[0])))
+            print(vp.media_jump(idx=int(args.rest[0])))
         elif c == "seek":
             if not args.rest:
                 sys.exit("!! 用法: seek <目标秒>")
-            print(vp.media_seek(int(args.rest[0])))
+            print(vp.media_seek(sec=int(args.rest[0])))
         elif c == "bt-name":
-            print(vp.bt_name(args.name) if args.name else vp.bt_name())
+            print(vp.bt_name(name=args.name) if args.name else vp.bt_name())
         elif c == "upload":
             if not args.rest and not args.file:
                 sys.exit("!! upload 需要文件路径(位置参数或 --file)")
             for p in ([args.file] if args.file else args.rest):
                 print(f"[上传] {p}")
-                print(vp.upload_audio(p))
+                print(vp.upload_audio(path=p))
         elif c == "files":
             for f in vp.list_audio():
                 print(f'{f["name"]}\t{f["kb"]}KB')
         elif c == "del":
             if not args.name:
                 sys.exit("!! del 需要 --name <乐库文件名>")
-            print(vp.del_audio(args.name))
+            print(vp.del_audio(name=args.name))
         elif c == "play-audio":
             if not args.rest and not args.file:
                 sys.exit("!! play-audio 需要音频文件路径(位置参数或 --file)")
-            print(vp.play_audio_files([args.file] if args.file else args.rest))
+            print(vp.play_audio_files(paths=[args.file] if args.file else args.rest))
         # ---------- 联系人(PBAP) ----------
         elif c == "contacts-load":
-            print(vp.contacts_load(args.count, prefix=args.prefix))
+            print(vp.contacts_load(count=args.count, prefix=args.prefix))
         elif c == "contacts-file":
             if not args.file:
                 sys.exit("!! contacts-file 需要 --file (每行: 姓名|号码)")
@@ -207,21 +207,21 @@ def main():
         elif c == "bond":
             if not args.mac:
                 sys.exit("!! bond 需要 --mac <MAC或名字片段>")
-            print(vp.bt_bond(args.mac))
+            print(vp.bt_bond(target=args.mac))
         elif c == "unpair":
             if not args.mac:
                 sys.exit("!! unpair 需要 --mac <MAC或名字片段>")
-            print(vp.bt_unpair(args.mac))
+            print(vp.bt_unpair(target=args.mac))
         elif c == "bt-enable":
-            print(vp.bt_enable(args.on != "0"))
+            print(vp.bt_enable(on=args.on != "0"))
         elif c == "disconnect":
-            print(vp.bt_disconnect(args.mac, force=args.force))
+            print(vp.bt_disconnect(mac=args.mac, force=args.force))
         elif c == "reconnect":
-            print(vp.bt_reconnect(args.mac))
+            print(vp.bt_reconnect(target=args.mac))
         elif c == "allow-car":
-            print(vp.bt_allow_car(args.mac))
+            print(vp.bt_allow_car(target=args.mac))
         elif c == "auto-outgoing":
-            print(vp.set_auto_outgoing(args.on != "0"))
+            print(vp.set_auto_outgoing(on=args.on != "0"))
         # ---------- 部署 ----------
         elif c == "enable-autoconfirm":
             print(vp.enable_autoconfirm())
@@ -229,7 +229,7 @@ def main():
             print(vp.launch())
         elif c == "install":
             # docstring 写"install [apk路径]": 位置参数与 --file 都认, 都不给=自动找默认包
-            print(vp.install(args.rest[0] if args.rest else args.file))
+            print(vp.install(apk=args.rest[0] if args.rest else args.file))
         else:
             sys.exit(f"!! 未知命令 {c}")
     except VPhoneError as e:
