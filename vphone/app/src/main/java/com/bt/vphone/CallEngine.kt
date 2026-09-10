@@ -46,8 +46,14 @@ object CallEngine {
 
     lateinit var app: Context
 
-    /** 一路通话记录。conn/state 只在主线程读写(Dispatcher.onMain/Telecom 回调/定时器)。 */
-    class CallRec(val number: String, var conn: Connection?, var state: String)
+    /** 一路通话记录。conn/state 只在主线程读写(Dispatcher.onMain/Telecom 回调/定时器)。
+     *  audio* = 该路的"对端说话"绑定(第九轮): HFP 单 SCO, 车机只听得到 active 那路,
+     *  每路各自记文件/循环/进度, 通话切换时 CallAudioEngine.followForeground() 跟随换源。 */
+    class CallRec(val number: String, var conn: Connection?, var state: String) {
+        var audioName: String? = null
+        var audioLoop: Boolean = false
+        var audioPosMs: Int = 0
+    }
 
     private val calls = mutableListOf<CallRec>()
 
@@ -57,6 +63,9 @@ object CallEngine {
             ?: calls.firstOrNull { it.state == "ringing" }
             ?: calls.firstOrNull { it.state == "dialing" }
             ?: calls.firstOrNull { it.state == "held" }
+
+    /** 当前 active 那路(可能无) —— 对端音频可听性的判据, 给 CallAudioEngine 用 */
+    fun activeRec(): CallRec? = calls.firstOrNull { it.state == "active" }
 
     /** 派生只读视图: 既有读点(CallAudioEngine/MediaEngine/Dispatcher/GUI)零改动 */
     val state: String get() = foreground()?.state ?: "idle"
@@ -287,19 +296,23 @@ object CallEngine {
      */
     fun activate(rec: CallRec, stateEvt: String?, src: String, msg: String) {
         calls.filter { it !== rec && it.state == "active" }.forEach {
-            holdRec(it, EventLog.CALL_HELD, "app", "接听/激活 ${rec.number}, 原通话自动保持")
+            // 编排内的保持不触发 follow —— 中间态"无 active"会误报静音事件,
+            // 等 rec 激活后结尾统一 follow 一次, 事件说的才是最终语义
+            holdRec(it, EventLog.CALL_HELD, "app", "接听/激活 ${rec.number}, 原通话自动保持", follow = false)
         }
         rec.conn?.setActive()
         rec.state = "active"
         if (stateEvt != null) EventLog.add(stateEvt, src, "$msg → active")
         evt("呼叫状态 → active (${rec.number})")
+        CallAudioEngine.followForeground()      // 换了 active 路 → 车机听到的对端音频跟随
     }
 
-    fun holdRec(rec: CallRec, stateEvt: String, src: String, msg: String) {
+    fun holdRec(rec: CallRec, stateEvt: String, src: String, msg: String, follow: Boolean = true) {
         rec.conn?.setOnHold()
         rec.state = "held"
         EventLog.add(stateEvt, src, "$msg (${rec.number})")
         evt("呼叫状态 → held (${rec.number})")
+        if (follow && activeRec() == null) CallAudioEngine.followForeground()   // 保持后无 active → 静音
     }
 
     /** 机械拆线一路(事件由调用方先发): 移除记录; 最后一路才全清(通话音频随末路停)。 */
@@ -310,7 +323,7 @@ object CallEngine {
         } catch (_: Throwable) {
         } finally {
             calls.removeAll { it === rec }
-            if (calls.isEmpty()) clearAll()
+            if (calls.isEmpty()) clearAll() else CallAudioEngine.followForeground()
         }
     }
 

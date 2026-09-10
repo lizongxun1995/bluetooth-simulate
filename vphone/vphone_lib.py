@@ -6,7 +6,8 @@
   门B(媒体): set_track/playlist/play/pause/next/prev + upload_audio(电脑音频→车机播放)
              + 车机按键回流(expect_event CAR_PLAY/CAR_NEXT/...)
   门C(电话): incoming/dial/answer/hangup/hold/swap/dtmf/audio_bt + call_audio(通话中自定义音频)
-             多路: 呼叫等待(通话中 incoming)/接听自动保持/切换 swap/选择性挂断 hangup(number=)
+             多路: 呼叫等待(通话中 incoming)/接听自动保持/切换 swap/选择性挂断 hangup(number=)/
+             各路独立"对端音频"(切换跟随, HFP 单 SCO 同真机)
              + 车机接听/挂断回流(expect_event CAR_ANSWER/CAR_HANGUP/CAR_DIAL/...)
   联系人:    contacts_load(批量1w)/contacts_import(自定义)/contacts_clear —— PBAP 测车机通讯录
   蓝牙:      bt_scan/bt_bond/bt_unpair/bt_reconnect/bt_state/bt_enable (配对不出App)
@@ -50,7 +51,7 @@ REMOTE_PORT = 8800
 DEFAULT_LOCAL_PORT = 18800   # PC 侧 forward 端口(避开本机 8800 常见占用)
 ACCOUNT_ARGS = f"{PKG}/.VPhoneConnectionService VPHONE 0".split()
 
-__version__ = "0.7.0"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
+__version__ = "0.8.0"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
 
 
 # Windows: GUI(windowed exe)无控制台时, 每个 adb 子进程都会新弹一个黑窗 ——
@@ -439,11 +440,14 @@ class VPhone:
 
     def call_audio(self, *, name, loop=False) -> str:
         """通话中向车机播放自定义音频(模拟"对端说话", SCO 下行)。
-        name=乐库文件名(先 upload_audio); 需先有 active 通话(车机接听/answer)。"""
+        name=乐库文件名(先 upload_audio); 需先有 active 通话(车机接听/answer)。
+        多路(0.8.0+): 音频绑定到当前 active 那一路, 每路可各绑不同文件;
+        swap/answer/hold 切换时车机听到的"对端"自动跟随并续各自进度
+        (HFP 单 SCO, 真机同样只有 active 路出声; 事件 CALL_AUDIO_FOLLOW 可断言)。"""
         return self.cmd("call_audio", name=name, loop="1" if loop else "0")
 
     def call_audio_stop(self) -> str:
-        """停止通话音频(对端"闭嘴")。"""
+        """停止通话音频并解除当前路的绑定(对端"闭嘴"; 再激活不再自响起播)。"""
         return self.cmd("call_audio", stop="1")
 
     # ================= 联系人: 自定义/批量(PBAP 测车机通讯录) =================

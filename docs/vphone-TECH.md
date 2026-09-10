@@ -136,6 +136,7 @@ play↔pause 循环干净；双并发 logcat 流各 45/45 行共存；Python 重
 | T12 | 双通话切换 | 互换 active/held | `swap()` / `hold(on=0)` 等价；车机 CHLD 键走 onHold/onUnhold 回调 | ✅ |
 | T13 | 挂一路 | 挂 active 后另一路保持 held 不自动恢复；挂 held 不影响 active | hangup 选择性/前景优先级；恢复须显式 `hold(on=0)` | ✅ |
 | T14 | 通话中拨出 | 新呼叫接通时原通话自动保持 | dial 第二路 + 3s 摘机时 activate（自动 hold 原路） | ✅ |
+| T15 | 双通话各自的对端音频 | HFP 单 SCO：车机永远只听得到 active 路；被保持那路声音由网络侧处理，车机不可闻 | 每路 CallRec 独立绑 audioName/loop/进度；切换 followForeground() 换源续播、无 active 即静音；手动 stop 解绑；两路同时混音刻意不做（真机不存在） | ✅ |
 | — | 暂停态车机切歌 | 车机上应能切 | 代码侧状态机已对齐(事件+元数据可查)，**待车机实测裁决**（EMUI 是否丢键存疑，见 DEV 清单） | ⏳ |
 
 ## 7. 与真机的已知偏差清单（测试有效性边界）

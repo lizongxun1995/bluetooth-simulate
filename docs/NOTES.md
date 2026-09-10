@@ -962,3 +962,40 @@ test_lib.py: 8→10 组(多路指令面 fake: 路径/参数精确匹配含 hangu
 
 产物: APK 960742B 同步 apk/; exe(13MB)/wheel(0.7.0) 重建, wheel 新 venv 验证
 (版本/内嵌 APK/CLI 入口)通过。
+
+**追加：vphone 第九轮 —— 双通道独立对端音频 + GUI 通话音频进度条**
+
+需求原话: "两个电话通道能否分别播放不同的音乐; 模拟时要显示媒体音乐进度条和电话播放的进度条"。
+
+物理结论(先讲清): HFP 只有一条 SCO 音频链, 真机上两路通话也永远只有 active 那路出声
+(被保持那路由运营商网络处理, 车机听不到) —— "两路同时混音"真机不存在, 刻意不做。
+**能做且保真的**: 每路通话各自绑定"对端音频"(文件/循环/进度), 车机听到的始终是
+active 路的那段, 通话切换时自动换源并续各自进度 —— 像给两个人打电话各说各话。
+
+APK 侧(0.8.0, versionCode 4):
+- CallRec 加 audioName/audioLoop/audioPosMs; CallAudioEngine.play 绑定到当前 active 路
+  (无 active 明确拒绝, 收紧了第七轮"无通话也报 playing"的松语义 —— 该状态不再可进入);
+- followForeground()(activate/holdRec/teardown 结尾调用): 换源续播/无绑定静音/无 active
+  静音; 等待路进来(ringing 不顶 active)声音不断; 手动 stop=真解绑(该路再激活不自响);
+  自然播完归零进度(再切回从头说);
+- 新事件 CALL_AUDIO_FOLLOW(实际发生可闻变化时发, detail 带新 active 号码+文件+续播位置);
+- /call/audio-status 与 /status 的 callAudio 行末尾追加 num=<号码>(当前出声的是哪路,
+  追加字段兼容既有解析); activate 编排内的 holdRec 不再触发 follow —— 中间态
+  "无 active"会误报静音事件(设备验收逮到, 收敛为 activate 结尾统一 follow 一次)。
+
+GUI: 电话区新增对端音频进度条(与媒体进度条同款 Scale, 拖动即 seek) + 状态行
+「对端音频: 「xx.mp3」 3s/10s 循环 [号码]」; _stat_poll 同窗口拉 /call/audio-status,
+_drain 加 caudio/caudiotxt 消息。媒体进度条本就有(scale_pos + 当前曲目行), 未动。
+
+设备验收(华为 TEL-AN00a, 全绿): 无通话拒播 / 等待期间声音不断 / 接听 B(无绑定)静音
+且事件带 B 号码 / swap 双向跟随+各自续播位置(实测 B 2s→3s, A 独立) / 保持→静音 /
+恢复通话→对端自动继续说话 / 手动 stop 解绑(切回不自响) / 重绑正常 / 全挂复位逐路事件。
+意外收获: 车机(CARKIT-1, 当时实连)在双 held 状态发了 CHLD=0(释放保持通话), APK 正确
+回流 CAR_REJECT 并拆掉保持路 —— 真车机对多路通话的首次主动操作回流, 记入证据。
+
+验收脚本三次踩坑(都是脚本错, 非 APK 错, 备忘): ①RING_IN 事件在 incoming() 指令内
+同步发, 而连接落地(attach)是异步 —— 等 RING_IN 再 answer 仍会抢跑, 可靠同步点是
+/status 出现 ringing:; ②swap 的事件在 HTTP 响应前就落日志, 断言必须先记水位再发命令;
+③双 held 时 hold(on=0) 恢复的是列表第一路(calls 顺序), 不是"最后保持的那路"。
+
+产物: APK 同步 apk/; exe(13MB)/wheel(0.8.0) 重建; test_lib 10 组回归全绿。

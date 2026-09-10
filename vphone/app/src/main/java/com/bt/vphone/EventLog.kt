@@ -33,7 +33,7 @@ object EventLog {
     /** 媒体/音频 */ const val CMD_PLAY = "CMD_PLAY"; const val CMD_PAUSE = "CMD_PAUSE"
     const val CMD_NEXT = "CMD_NEXT"; const val CMD_PREV = "CMD_PREV"
     const val MEDIA_TRACK_END = "MEDIA_TRACK_END"; const val MEDIA_UPLOAD = "MEDIA_UPLOAD"
-    const val CALL_AUDIO_END = "CALL_AUDIO_END"
+    const val CALL_AUDIO_END = "CALL_AUDIO_END"; const val CALL_AUDIO_FOLLOW = "CALL_AUDIO_FOLLOW"
     /** 蓝牙链路 */ const val BT_ACL_CONNECTED = "BT_ACL_CONNECTED"
     const val BT_ACL_DISCONNECTED = "BT_ACL_DISCONNECTED"
     const val BT_DISCONNECT = "BT_DISCONNECT"

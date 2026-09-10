@@ -19,7 +19,7 @@
     ready → VPhone     → 连接成功: 换 vp 引用+启动代际轮询+环境加固
     connfail → str     → 连接失败提示
     devs  → [dict]     → 蓝牙扫描结果回填列表
-    contacts/media/pos/callst → 状态区刷新 / call → 主线程执行可调用对象
+    contacts/media/pos/callst/caudiotxt/caudio → 状态区刷新 / call → 主线程执行可调用对象
 · 轮询代际: 每次「连接」成功 _gen+1, 旧代 _evt_poll/_stat_poll 检测到代际
   变化即退出 —— 重复点「连接」不会叠加轮询线程(否则事件双份/进度双刷)。
 """
@@ -146,6 +146,17 @@ class App:
         ttk.Button(r3b, text="▶播放(需通话中)",
                    command=self._call_audio).pack(side="left", padx=4)
         ttk.Button(r3b, text="⏹停止", command=lambda: self._run(self.vp.call_audio_stop)).pack(side="left")
+        # 对端音频进度条(1s 轮询 /call/audio-status): 与媒体进度条同款交互, 拖动即 seek
+        spc = ttk.Frame(f2); spc.pack(fill="x", padx=8)
+        ttk.Label(spc, text="对端s").pack(side="left")
+        self._caudio_drag = False
+        self.scale_caudio = tk.Scale(spc, from_=0, to=60, orient="horizontal",
+                                     showvalue=True, resolution=1, length=480)
+        self.scale_caudio.pack(side="left", fill="x", expand=True, padx=6)
+        self.scale_caudio.bind("<ButtonPress-1>", lambda e: setattr(self, "_caudio_drag", True))
+        self.scale_caudio.bind("<ButtonRelease-1>", self._caudio_release)
+        self.lbl_caudio = ttk.Label(f2, text="对端音频: 无", foreground="#753")
+        self.lbl_caudio.pack(fill="x", padx=8, pady=(0, 3))
         # 多路通话状态行(1s 轮询 /status 刷新): 双通话时显示 [active:X,held:Y] 一眼看清
         self.lbl_call = ttk.Label(f2, text="通话: idle", foreground="#753")
         self.lbl_call.pack(fill="x", padx=8, pady=(0, 3))
@@ -505,6 +516,11 @@ class App:
         v = int(self.scale_pos.get())
         self._run(lambda: self.vp.media_seek(sec=v))
 
+    def _caudio_release(self, _e=None):
+        self._caudio_drag = False
+        v = int(self.scale_caudio.get())
+        self._run(lambda: self.vp.http_post("/call/audio", {"seek": v}))
+
     def _stat_poll(self, gen):
         """后台线程: 1s 刷新"当前曲目/时间"行 —— 车机切歌后 GUI 立即跟上。
         代际不符(用户重新点了「连接」)或连续失败(USB 断连)即自停。"""
@@ -533,6 +549,20 @@ class App:
                     if ccalls and ccalls != "[]":
                         ctxt += f"  {ccalls}"
                     self.q.put(("callst", ctxt))
+                # 对端音频进度条(多路: num= 报当前出声的是哪路)
+                ca = self.vp.http("/call/audio-status")
+                ma = re.search(
+                    r'callAudio=playing name="([^"]*)" pos=(\d+)s dur=(\d+)s loop=([01])(?: num=(\S+))?', ca)
+                if ma:
+                    nm, pos, dur, lp, num = ma.groups()
+                    txt = f"对端音频: 「{nm}」 {pos}s/{dur}s" + (" 循环" if lp == "1" else "")
+                    if num:
+                        txt += f"  [{num}]"
+                    self.q.put(("caudiotxt", txt))
+                    self.q.put(("caudio", (int(pos), int(dur))))
+                else:
+                    self.q.put(("caudiotxt", "对端音频: 无"))
+                    self.q.put(("caudio", (0, 0)))
                 fail = 0
             except Exception:
                 fail += 1
@@ -718,6 +748,15 @@ class App:
                             self.scale_pos.config(to=dur)
                         if abs(self.scale_pos.get() - pos) >= 1:
                             self.scale_pos.set(pos)
+                elif kind == "caudiotxt":
+                    self.lbl_caudio.config(text=payload)
+                elif kind == "caudio":
+                    pos, dur = payload
+                    if not self._caudio_drag:
+                        if int(self.scale_caudio.cget("to")) != dur:
+                            self.scale_caudio.config(to=dur)
+                        if abs(self.scale_caudio.get() - pos) >= 1:
+                            self.scale_caudio.set(pos)
                 elif kind == "call":
                     payload()
         except queue.Empty:
