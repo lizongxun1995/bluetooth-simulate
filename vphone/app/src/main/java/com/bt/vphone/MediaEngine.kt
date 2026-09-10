@@ -252,6 +252,9 @@ object MediaEngine {
         }
         plIndex = (plIndex + d + playlist.size) % playlist.size
         applyIndex()
+        // 切歌后仍指向同一真实文件(单曲列表回绕/跳回自身): 真机=从头重播;
+        // 不归零的话 ensureAudioOut 对同文件只 start() → 进度闪 0 又弹回、声音续播(第十二轮)
+        if (playing) restartIfSameReal()
         // 播放中: 换文件开播; 暂停中: 释放旧播放器(恢复时从新歌0s起), 避免挂着旧文件
         if (playing) ensureAudioOut() else stopReal()
         pushMeta()
@@ -266,6 +269,7 @@ object MediaEngine {
         val i = ((idx % playlist.size) + playlist.size) % playlist.size
         plIndex = i
         applyIndex()
+        if (playing) restartIfSameReal()   // 跳回自身同 doAdvance: 真机=从头重播
         // 与 doAdvance 同一基准: 暂停中跳曲也要释放旧播放器, 否则 mp 仍绑旧文件
         // (status/realTag 显示旧歌, FF/RW 的 seekTo 会打到旧文件上)
         if (playing) ensureAudioOut() else stopReal()
@@ -273,6 +277,16 @@ object MediaEngine {
         pushState()
         nudgeWhilePaused()
         return "跳转 → ${trackDesc()}${realTag()}"
+    }
+
+    /** 换曲后仍指向同一真实文件: 真机=从头重播。seek 窗口一并归零, 防心跳弹回旧位置。 */
+    private fun restartIfSameReal() {
+        val m = mp ?: return
+        val f = realFile() ?: return
+        if (realFor != f) return
+        try { m.seekTo(0) } catch (_: Exception) {}
+        seekAt = System.currentTimeMillis()
+        seekPosMs = 0
     }
 
     /**

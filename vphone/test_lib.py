@@ -220,6 +220,66 @@ def test_multicall_scenario():
     ok("多路场景回放: 等待/自动保持/切换/挂前景自动恢复/全挂+媒体焦点 全链路事件断言")
 
 
+def test_call_races():
+    """第十二轮拆线竞态(故事化断言): ①拨出3s内挂断不得"幽灵接通";
+    ②车机连挂两路(active+held)不得把 held 复活成僵尸; ③路由切换事件可断言。"""
+    A, B = "13800138000", "13900139000"
+    hist = {}
+
+    def h(*new):
+        hist.update({e["id"]: e for e in new})
+        return {"last": max(hist), "events": list(hist.values())}
+
+    # ① 拨 B → 3s 内挂 B: 事件流止于 CALL_ENDED, 之后不得冒"自动接通"
+    hist.clear()
+    vp = fake_staged(
+        {"last": 0, "events": []},
+        h(ev(1, "CMD_DIAL", "cmd", f"指令拨出 号码={B}")),
+        h(ev(2, "CALL_ENDED", "cmd", f"指令挂断 ({B})")),
+        h(), h(),
+    )
+    vp.dial(number=B)
+    vp.hangup(number=B)
+    m = vp.expect_event(evt_type="CALL_ENDED", detail=B, since=0,
+                        timeout=1, because="拨出即挂").id
+    vp.expect_no_event(evt_type="CALL_ACTIVE", since=m, within=0.5)  # 3s内挂断的拨路不得幽灵接通
+    ok("拆线竞态①: 拨出 3s 内挂断 → 无幽灵 CALL_ACTIVE")
+
+    # ② A active + B held, 车机背靠背挂两路: 全清+媒体恢复, 中途不得出现"自动恢复"
+    hist.clear()
+    vp = fake_staged(
+        {"last": 0, "events": []},
+        h(ev(1, "CAR_HANGUP", "car", f"车机按了【挂断】(onDisconnect) 号码={A}")),
+        h(ev(2, "CAR_HANGUP", "car", f"车机按了【挂断】(onDisconnect) 号码={B}"),
+          ev(3, "MEDIA_CALL_RESUME", "app", "通话结束, 音频焦点归还 → 媒体自动恢复播放")),
+        h(), h(),
+    )
+    m = vp.event_watermark()
+    m = vp.expect_event(evt_type="CAR_HANGUP", detail=A, since=m,
+                        timeout=1, because="车机挂A").id
+    m = vp.expect_event(evt_type="CAR_HANGUP", detail=B, since=m,
+                        timeout=1, because="车机挂B").id
+    vp.expect_event(evt_type="MEDIA_CALL_RESUME", since=m,
+                    timeout=1, because="全清媒体恢复")
+    vp.expect_no_event(evt_type="CALL_ACTIVE", detail="自动恢复", since=0, within=0.5)  # 连挂两路不诈尸
+    ok("拆线竞态②: 车机连挂两路 → 全清, 无僵尸复活")
+
+    # ③ 通话音频路由切换事件(蓝牙⇄听筒)
+    hist.clear()
+    vp = fake_staged(
+        {"last": 0, "events": []},
+        h(ev(1, "CALL_AUDIO_ROUTE", "sys", "通话音频路由 → 听筒 (对端声音跟随, 切换输出)")),
+        h(ev(2, "CALL_AUDIO_ROUTE", "sys", "通话音频路由 → 蓝牙(车机) (对端声音跟随, 切换输出)")),
+        h(), h(),
+    )
+    m = vp.event_watermark()
+    m = vp.expect_event(evt_type="CALL_AUDIO_ROUTE", detail="听筒", since=m,
+                        timeout=1, because="切听筒").id
+    vp.expect_event(evt_type="CALL_AUDIO_ROUTE", detail="蓝牙", since=m,
+                    timeout=1, because="切回蓝牙")
+    ok("路由跟随: CALL_AUDIO_ROUTE 事件可断言(蓝牙⇄听筒)")
+
+
 def test_kwargs_only():
     vp = fake_vp({"last": 0, "events": []})
     for bad in (lambda: vp.incoming("123"),
@@ -264,6 +324,7 @@ if __name__ == "__main__":
     print("== vphone_lib 无设备单测 ==")
     for t in (test_vevent, test_events_snapshot, test_wait_event, test_expect_event,
               test_expect_no_event, test_timeout0_peek, test_multicall_commands,
-              test_multicall_scenario, test_kwargs_only, test_signature_contract):
+              test_multicall_scenario, test_call_races, test_kwargs_only,
+              test_signature_contract):
         t()
     print(f"== 全部通过 ({PASS} 组) ==")

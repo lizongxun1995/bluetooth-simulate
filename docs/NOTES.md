@@ -1046,3 +1046,49 @@ APK 0.8.2(versionCode 5)/lib 0.8.2; test_lib 多路场景回放按新事件链�
 (挂前景→自动恢复, 两端补媒体焦点事件), 10 组全绿; exe/wheel 重建。
 另: 验收脚本曾把 /status 里媒体行 focus=held 误当通话 held 断言 —— /status 是多引擎
 汇总行, 断言通话态要切出 calls= 段看, 别整行 substring。
+
+## 九、第十二轮 —— 全量审查 + 拆线竞态(僵尸通话) + 通话音频路由跟随 — 2026-09-08
+
+背景: 用户台架实测逮到两个新 bug, 同时要求审查媒体/电话切换逻辑是否符合真机。
+审查挖出的高危项与 bug① 同根因, 合并本轮一次修掉(0.8.3)。
+
+**① 车机连挂两路后出现"挂不掉的僵尸通话"**(车机显示有通话+有声, 手机无通话 UI,
+重启才能清)。根因链: teardown 挂掉 active 后【同步】复活 held —— 车机"挂断"时两条
+onDisconnect 背靠背到达, 复活恰好落在 Telecom 正在拆第二条连接的窗口里, 把半死连接
+setActive 拉起来, Telecom 状态错乱(车机看 HFP 还有通话, 手机侧已无此呼叫, 后续挂断
+无法路由)。审查还发现同机制第二引信: 去电 3s 自动摘机定时器只查 r.state=="dialing",
+而 teardown 从不改 state → "拨出 3s 内挂断"会幽灵 CALL_ACTIVE; 有其它 active 通话时
+会被幽灵保持并卡死(这就是审查报告里的高危项)。修复(一套机制关两个引信):
+  - teardown 进门先置终态 rec.state="ended";
+  - 复活改延迟 300ms 重验(仍在 calls 且仍 held)再 activate —— 避开拆线窗口, 且更贴
+    真机(网络取回本就有时延); 代价: 事件链多一条中间 CALL_AUDIO_FOLLOW(静音);
+  - 3s 摘机定时器 owns()+state 双校验。
+顺带: 车机 onHold 非活动路只记按键不改状态(真机不存在"保持响铃路"); dtmf 加 active
+守卫(对齐 API 文档"需 active"); swap 在"无 held 有等待路"时=保持当前+接答(CHLD=2)。
+
+**② 车机/手机通话界面切声音到手机, 听筒/扬声器无声, 只有蓝牙出声。**
+根因: CallAudioEngine.pinSco 把对端音频硬绑 TYPE_BLUETOOTH_SCO, Telecom 路由切换
+对它无效。同根因还解释了①前半段"两路各放音乐, 进度在走但没声音": 接通时未显式请求
+蓝牙路由, EMUI 偶尔把通话留在听筒 → pinSco 找不到 SCO 设备, 声音去了手机听筒
+(车机侧=没声音)。修复:
+  - VConnection.onCallAudioStateChanged(CallAudioState) → CallAudioEngine 跟踪路由;
+  - 蓝牙才绑 SCO, 且 SCO 设备未出现时后台 0.5s×20 重试(设备可能迟到);
+  - 听筒/扬声器/有线清 preferredDevice, 走系统通话路由;
+  - activate() 在当前路由为蓝牙时显式 conn.setAudioRoute(ROUTE_BLUETOOTH)(真机接通
+    默认; 用户切去听筒后不抢回);
+  - 新事件 CALL_AUDIO_ROUTE(sys, detail=目标路由)。
+
+**③ 媒体切换顺带修**: 单曲列表 next/跳回自身 = 从头重播(restartIfSameReal; 原实现
+只 start() 续播, 进度闪 0 又弹回、声音不断)。
+
+**审查记录未修(待裁决, 见审查报告)**:
+  - 无 active 时第二路来电进"呼叫等待"(两路同时 ringing) —— 真机网络侧一般对新主叫
+    回忙, 待拿日常手机验证再定是否收紧;
+  - 通话 active 中手动播媒体"进度在走没声"(S3 用户覆盖语义, 协作焦点灰区, 文档已载);
+  - 拨号等待期无回铃音(可听通道缺口, 补齐成本高, 缓)。
+
+版本: APK 0.8.3(versionCode 6)/lib 0.8.3; test_lib 新增 test_call_races(①幽灵接通
+②连挂两路不诈尸 ③路由事件), 13 组全绿; 签名契约仍 77。设备验收待手机回位, 重点:
+连挂两路清干净、拨出 3s 内取消无幽灵、车机/手机切路由声音跟随、挂 active 后 held
+约 0.3s 恢复、单曲 next 从头播。若再遇僵尸通话先试 PC 侧全挂(hangup number=all),
+能清=我们状态机的锅, 不能清=Telecom 侧(需本轮修复装机后复测)。

@@ -29,6 +29,8 @@ import android.util.Log
  *   - 双通话时 hold(on=0)/swap = 切换; 挂掉 active 后 held 自动恢复
  *     (第十一轮纠正: 真机 GSM CHLD=1 语义 = 释放 active 时网络自动取回保持路,
  *      第八轮"held 保持不自动恢复"是错误假设, 实测车机用户预期=对端继续有声)
+ *   - 拆线竞态防护(第十二轮): teardown 进门先置终态 + 复活延迟 300ms 重验 ——
+ *     车机连挂两路/拨出 3s 内取消, 都不会再把半死连接 setActive 拉成僵尸通话
  *   - 任一时刻最多一路 active —— activate() 统一编排"先保持其它 active"
  *
  * 单路状态转换(真机基准: 任何失败/拆线路径都必须归回 idle, 不留悬挂 connection):
@@ -143,6 +145,9 @@ object CallEngine {
 
     fun hasCalls(): Boolean = calls.isNotEmpty()
 
+    /** 这路还挂在状态机里吗 —— 定时器/延迟复活做身份校验, 不对已拆线路做动作(第十二轮) */
+    fun owns(rec: CallRec): Boolean = calls.contains(rec)
+
     fun callsDesc(): String =
         if (calls.isEmpty()) "[]" else calls.joinToString(",", "[", "]") { "${it.state}:${it.number}" }
 
@@ -227,15 +232,27 @@ object CallEngine {
         }
     }
 
-    /** 双通话切换: 挂起 active、激活 held(与 hold(on=0) 等价, 语义显式)。 */
+    /** 双通话切换: 挂起 active、激活 held(与 hold(on=0) 等价, 语义显式)。
+     *  真机 CHLD=2 对等待路(ringing)同样适用 = 保持当前+接答等待 —— 没有保持路
+     *  但有等待来电时, 切换=接听它(第十二轮对齐; 车机 CHLD 键走 onAnswer 早已覆盖)。 */
     fun swap(): String {
-        val activeRec = calls.firstOrNull { it.state == "active" }
+        val cur = calls.firstOrNull { it.state == "active" }
+            ?: return "切换需要一路 active ${callsDesc()}"
         val heldRec = calls.firstOrNull { it.state == "held" }
-        if (activeRec == null || heldRec == null)
-            return "切换需要一路 active + 一路 held ${callsDesc()}"
+        if (heldRec == null) {
+            val waiting = calls.firstOrNull { it.state == "ringing" }
+                ?: return "切换需要一路 held(或等待来电) ${callsDesc()}"
+            return try {
+                activate(waiting, EventLog.CALL_ACTIVE, "cmd",
+                    "指令切换(接答等待路) → ${waiting.number}")
+                "已切换 → 通话中: ${waiting.number}, 保持中: ${cur.number}"
+            } catch (e: Exception) {
+                "切换失败: ${e.message}"
+            }
+        }
         return try {
             activate(heldRec, EventLog.CALL_ACTIVE, "cmd", "指令切换 → ${heldRec.number}")
-            "已切换 → 通话中: ${heldRec.number}, 保持中: ${activeRec.number}"
+            "已切换 → 通话中: ${heldRec.number}, 保持中: ${cur.number}"
         } catch (e: Exception) {
             "切换失败: ${e.message}"
         }
@@ -243,7 +260,7 @@ object CallEngine {
 
     /** 挂断。number=null 挂前景(active>ringing>dialing>held, 对齐车机红键);
      *  number=号码 挂指定一路; number="all" 全挂复位。挂掉 active 后若剩 held,
-     *  teardown 内自动取回保持路(真机 CHLD=1 语义, 第十一轮)。 */
+     *  teardown 内自动取回保持路(真机 CHLD=1 语义; 延迟 300ms 重验, 第十一/十二轮)。 */
     fun hangup(number: String? = null): String {
         if (number == "all") {
             if (calls.isEmpty()) return "本就无通话"
@@ -269,6 +286,8 @@ object CallEngine {
     }
 
     fun dtmf(c: String): String {
+        if (activeRec() == null)
+            return "DTMF 需在接通的通话中发送 (当前 ${callsDesc()})"
         val ch = c.firstOrNull() ?: return "无按键字符"
         // Connection 无出站 DTMF API; 车机侧按键会回流 VConnection.onPlayDtmfTone
         evt("DTMF 按键模拟: $ch (等车机侧回流 onPlayDtmfTone)")
@@ -305,6 +324,14 @@ object CallEngine {
         }
         rec.conn?.setActive()
         rec.state = "active"
+        // 真机行为: 连着车机/耳机时接通默认走蓝牙 SCO —— 显式请求, 防 EMUI 把通话留在
+        // 听筒(第十二轮车机"两路都在放但没声音"根因之一); 无蓝牙设备时系统自忽略;
+        // 用户已切去听筒/扬声器的不抢回(CallAudioEngine 跟踪当前路由)
+        try {
+            if (CallAudioEngine.isBluetoothRoute())
+                rec.conn?.setAudioRoute(CallAudioState.ROUTE_BLUETOOTH)
+        } catch (_: Throwable) {
+        }
         if (stateEvt != null) EventLog.add(stateEvt, src, "$msg → active")
         evt("呼叫状态 → active (${rec.number})")
         // 兜底: 来电响铃期间用户手动放了音乐的话, 接通这一刻也要停(真机=通话焦点)
@@ -322,8 +349,16 @@ object CallEngine {
 
     /** 机械拆线一路(事件由调用方先发): 移除记录; 最后一路才全清(通话音频随末路停)。
      *  autoResume: 挂的是 active 且剩 held 时, 真机 GSM(CHLD=1 语义)会自动取回保持路 ——
-     *  剩余 held 自动激活(其对端音频 followForeground 续播); hangup("all") 传 false。 */
+     *  剩余 held 自动激活(其对端音频 followForeground 续播); hangup("all") 传 false。
+     *
+     *  第十二轮拆线竞态修复(车机实测事故: 连挂两路后出现挂不掉的僵尸通话):
+     *  ① 进门先打终态标记 rec.state="ended" —— 3s 自动摘机定时器/自动恢复/answer
+     *    都不会再选中它; 车机背靠背的两条挂断里, 后到的一条也能让复活逻辑闭嘴;
+     *  ② 复活不同步做, 延迟 300ms 重验(仍在 calls 且仍 held)再 activate ——
+     *    避开"Telecom 正在拆这条连接"的窗口, 不把半死连接 setActive 拉起来;
+     *    真机网络取回本就有时延, 行为反而更接近。 */
     fun teardown(rec: CallRec, autoResume: Boolean = true) {
+        rec.state = "ended"
         try {
             rec.conn?.setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
             rec.conn?.destroy()
@@ -331,14 +366,20 @@ object CallEngine {
         } finally {
             calls.removeAll { it === rec }
             if (calls.isEmpty()) clearAll()
-            else if (autoResume && activeRec() == null) {
-                val held = calls.firstOrNull { it.state == "held" }
+            else {
+                val held = if (autoResume && activeRec() == null)
+                    calls.firstOrNull { it.state == "held" } else null
+                CallAudioEngine.followForeground()   // 挂掉的这路声音先停(有 held 也先静音再复活)
                 if (held != null)
-                    activate(held, EventLog.CALL_ACTIVE, "app",
-                        "active挂断 → 保持路自动恢复(真机CHLD=1)")
-                else
-                    CallAudioEngine.followForeground()   // 剩的是 ringing(等待), 声音停即可
-            } else CallAudioEngine.followForeground()
+                    main.postDelayed({
+                        try {
+                            if (held.state == "held" && calls.contains(held))
+                                activate(held, EventLog.CALL_ACTIVE, "app",
+                                    "active挂断 → 保持路自动恢复(真机CHLD=1)")
+                        } catch (_: Throwable) {
+                        }
+                    }, 300)
+            }
         }
     }
 

@@ -6,8 +6,10 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
+import android.telecom.CallAudioState
 import android.util.Log
 import java.io.File
+import kotlin.concurrent.thread
 
 /**
  * 通话音频引擎: 虚拟通话中进行车机播放自定义音频 —— 模拟"对端说话"。
@@ -25,6 +27,10 @@ import java.io.File
  * HFP 单 SCO 决定车机永远只听得到 active 那路; 通话切换(swap/answer/hold/挂断)
  * 时 followForeground() 换源: 新 active 路从自己上次的进度续播, 无绑定则静音。
  * 进度行末尾 num= 报当前出声的号码。
+ *
+ * 第十二轮(路由跟随): 输出不再硬绑 SCO —— 跟着 Telecom 通话音频路由走
+ * (VConnection.onCallAudioStateChanged), 蓝牙才绑 SCO 且支持迟到重试;
+ * 听筒/扬声器清绑走系统通话路由(切到手机, 手机出声车机静音, 同真机)。
  */
 object CallAudioEngine {
 
@@ -38,6 +44,12 @@ object CallAudioEngine {
 
     /** 当前在播的音频属于哪路通话(第九轮: 对端音频绑定到 CallRec, 跟随前景切换) */
     private var boundRec: CallEngine.CallRec? = null
+
+    /** 当前通话音频路由(第十二轮): 车机通话界面/手机通话UI 的"声音切换"、audio_bt 指令
+     *  殊途同归, 都经 Telecom 改路由 → VConnection.onCallAudioStateChanged 回调到这。
+     *  默认蓝牙(车载是主用法); 对端音频必须跟着路由走, 不能硬绑 SCO 不放
+     *  (车机实测事故: 切到手机后手机听筒无声、车机照响)。 */
+    @Volatile private var callRoute = CallAudioState.ROUTE_BLUETOOTH
 
     /** /call/audio?name=: 绑定到当前 active 那路并立即起播(重发同一路 = 从头重播)。
      *  HFP 单 SCO —— 只有 active 路的声音车机听得到, 无 active 时明确拒绝(真机同构)。 */
@@ -76,7 +88,7 @@ object CallAudioEngine {
             m.prepare()
             if (startMs > 0) try { m.seekTo(startMs) } catch (_: Exception) {}
             m.start()
-            pinSco(m)
+            applyRoute(m)   // 按当前通话路由绑输出(蓝牙→SCO, 可能迟到要重试; 其它→系统通话路由)
             rawName = f.name
             mp = m
             boundRec = rec
@@ -186,21 +198,69 @@ object CallAudioEngine {
     fun status(): String =
         "callAudio=${playingName ?: "off"}" + (boundRec?.let { " num=${it.number}" } ?: "")
 
-    /** EMUI 坑同门B: 把播放器硬绑 SCO 输出, 防被切到别的通道。MediaPlayer 系 API 28+。 */
-    private fun pinSco(m: MediaPlayer) {
-        if (Build.VERSION.SDK_INT < 28) return
-        try {
+    /** 路由变化回调(VConnection.onCallAudioStateChanged) / 接通时的路由请求殊途同归。
+     *  记路由 + 事件(断言"切到手机后声音跟到手机") + 重绑在播音频的输出。 */
+    fun onRouteChanged(route: Int) {
+        if (route == callRoute) return
+        callRoute = route
+        EventLog.add(EventLog.CALL_AUDIO_ROUTE, "sys",
+            "通话音频路由 → ${routeName(route)} (对端声音跟随, 切换输出)")
+        applyRoute(mp)
+    }
+
+    /** 当前是否蓝牙通话路由(CallEngine.activate 据此决定要不要显式请求 SCO) */
+    fun isBluetoothRoute(): Boolean = (callRoute and CallAudioState.ROUTE_BLUETOOTH) != 0
+
+    fun routeName(route: Int): String = when (route) {
+        CallAudioState.ROUTE_EARPIECE -> "听筒"
+        CallAudioState.ROUTE_BLUETOOTH -> "蓝牙(车机)"
+        CallAudioState.ROUTE_WIRED_OR_EARPIECE -> "有线/听筒"
+        CallAudioState.ROUTE_SPEAKER -> "扬声器"
+        else -> "route$route"
+    }
+
+    /** 把在播的通话音频绑到当前路由对应的输出:
+     *  蓝牙 → 硬绑 SCO 设备(EMUI 坑, 同门B 的 A2DP 绑定); SCO 设备可能晚于起播出现
+     *        (路由刚切/链路慢 —— 第十二轮"进度在走没声音"根因之一), 找不到就后台重试;
+     *  听筒/扬声器/有线 → 清掉 preferredDevice, USAGE_VOICE_COMMUNICATION 自动走系统通话路由。 */
+    private fun applyRoute(m: MediaPlayer?) {
+        if (m == null || Build.VERSION.SDK_INT < 28) return
+        if (isBluetoothRoute()) {
+            if (!pinSco(m)) {
+                // 每 0.5s 重试共 10s; 播放器被换/路由又变了就停 —— 同 MediaEngine 的补绑套路
+                thread(isDaemon = true, name = "vphone-sco") {
+                    repeat(20) {
+                        Thread.sleep(500)
+                        if (mp !== m || !isBluetoothRoute()) return@thread
+                        if (pinSco(m)) return@thread
+                    }
+                }
+            }
+        } else {
+            try { m.preferredDevice = null } catch (_: Throwable) {}
+            Log.i(CallEngine.TAG, "通话音频跟随系统通话路由(${routeName(callRoute)})")
+        }
+    }
+
+    /** EMUI 坑同门B: 把播放器硬绑 SCO 输出, 防被切到别的通道。MediaPlayer 系 API 28+。
+     *  返回是否绑定成功(失败=当前没有 SCO 输出设备, 调用方可重试)。 */
+    private fun pinSco(m: MediaPlayer): Boolean {
+        if (Build.VERSION.SDK_INT < 28) return false
+        return try {
             val am = CallEngine.app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val sco = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
                 .firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
             if (sco != null) {
                 m.preferredDevice = sco
                 Log.i(CallEngine.TAG, "通话音频已绑 SCO 输出: ${sco.productName}")
+                true
             } else {
-                Log.w(CallEngine.TAG, "未见 SCO 输出设备(通话未建立/未路由蓝牙), 走系统默认通话路由")
+                Log.w(CallEngine.TAG, "未见 SCO 输出设备(路由未切蓝牙?), 稍后重试绑定")
+                false
             }
         } catch (t: Throwable) {
             Log.w(CallEngine.TAG, "SCO 路由绑定失败: ${t.message}")
+            false
         }
     }
 

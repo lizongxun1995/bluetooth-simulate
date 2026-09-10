@@ -52,14 +52,19 @@ WiFi 直连 `http://<手机IP>:8800`。返回纯文本，**例外：`/events` �
 ### 1.2 电话（门C）
 
 > **多路通话（GSM 真机语义）**：最多 2 路。通话中 `incoming` = 呼叫等待（新路 ringing，原路不动）；
-> `answer` 接听等待路时**原 active 自动保持**；双通话时 `hold?on=0` 与 `swap` 等价（互换 active/held）；
-> **挂掉 active 后剩余的 held 自动恢复**（真机 GSM CHLD=1 语义：释放 active 时网络自动取回保持路，
-> 对端音频随之续播；第十一轮纠正——第八轮"held 保持不自动恢复"是错误假设）；`/status` 里
-> `calls=[active:138…,held:10086]` 逐路可见。
+> `answer` 接听等待路时**原 active 自动保持**；双通话时 `hold?on=0` 与 `swap` 等价（互换 active/held；
+> 无 held 但有等待来电时 `swap` = 保持当前+接答，CHLD=2）；**挂掉 active 后剩余的 held 自动恢复**
+> （真机 GSM CHLD=1 语义：释放 active 时网络自动取回保持路，对端音频随之续播；第十一轮纠正——
+> 第八轮"held 保持不自动恢复"是错误假设；第十二轮补充：复活延迟 ~300ms 模拟网络取回时延，
+> 车机**连续挂两路**时不会把第二路诈尸）；`/status` 里 `calls=[active:138…,held:10086]` 逐路可见。
 >
 > **媒体焦点（真机音频焦点行为）**：媒体在播时来电铃声一响（或拨出）媒体即**暂停**（进度停走、
 > AVRCP 报 paused，事件 `MEDIA_CALL_PAUSE`）；全部通话结束焦点归还，媒体**自动续播**
 > （`MEDIA_CALL_RESUME`）。通话中的手动播放/暂停 = 用户接管，挂断后不再自动恢复。
+>
+> **通话音频路由（第十二轮）**：车机/手机通话界面的"声音切换"（蓝牙/听筒/扬声器）被跟踪，
+> 对端音频**跟随路由**（切到手机=手机出声车机静音，事件 `CALL_AUDIO_ROUTE` 可断言）；
+> 接通时若当前路由为蓝牙则显式请求 SCO（连着车机的真机默认行为）。
 
 | 端点 | 参数 | 说明 | 通道 |
 |---|---|---|---|
@@ -68,7 +73,7 @@ WiFi 直连 `http://<手机IP>:8800`。返回纯文本，**例外：`/events` �
 | `GET /call/answer` | — | PC 侧代接（ringing 优先）；双通话时自动保持原 active | 双 |
 | `GET /call/hangup` | `number`(可选) | 缺省挂**前景**（active>ringing>dialing>held，对齐车机红键）；指定号码挂某一路；`all` 全挂复位 | 双 |
 | `GET /call/hold` | `on=0/1` | on=1 保持前景 active；on=0 恢复 held（双通话时=切换） | 双 |
-| `GET /call/swap` | — | 双通话时互换 active/held（与 hold?on=0 等价，断言脚本语义显式） | 双 |
+| `GET /call/swap` | — | 双通话时互换 active/held（与 hold?on=0 等价，断言脚本语义显式）；无 held 但有等待来电时=保持当前+接答（CHLD=2） | 双 |
 | `GET /call/dtmf` | `key` | DTMF 按键（0-9*#，需 active） | 双 |
 | `GET /call/audio-bt` | — | 通话音频切蓝牙 SCO | 双 |
 | `GET /call/auto-outgoing` | `on=0/1` | 车机拨出后是否 3s 自动接通（默认开） | 双 |
@@ -279,6 +284,7 @@ vphone <cmd> ...                        # pip 安装后等价命令(装到 PATH)
 | `MEDIA_CALL_RESUME` | app | 全部通话结束、焦点归还 → 媒体自动续播（仅恢复"被通话暂停的"；通话中手动操作过则不发） |
 | `CALL_AUDIO_END` | app | 通话音频自然播完（loop=0；detail 带文件名+号码，手动 stop 不发） |
 | `CALL_AUDIO_FOLLOW` | app | 通话切换后对端音频跟随换源/静音（detail 带新 active 路号码+文件+续播位置；"切换后车机听到的声音变了"的断言证据） |
+| `CALL_AUDIO_ROUTE` | sys | 通话音频路由切换（蓝牙/听筒/扬声器；detail 带目标路由——"切到手机后对端声音跟到手机"的断言证据，第十二轮） |
 | `BT_ACL_CONNECTED/DISCONNECTED` `BT_A2DP_CONNECTED/DISCONNECTED` `BT_HFP_CONNECTED/DISCONNECTED` | bt | 链路迁移（断连/回连测试主力） |
 | `BT_DISCONNECT_FAILED` | app | 断开指令未成功（设备仍连接，断言别误判） |
 | `BT_BONDED` / `BT_BOND_FAILED` / `BT_SCAN_*` | bt/app | 配对/扫描 |

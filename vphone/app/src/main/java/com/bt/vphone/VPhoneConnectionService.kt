@@ -3,6 +3,7 @@ package com.bt.vphone
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.telecom.CallAudioState
 import android.telecom.Connection
 import android.telecom.ConnectionRequest
 import android.telecom.ConnectionService
@@ -74,11 +75,12 @@ class VPhoneConnectionService : ConnectionService() {
             val r = CallEngine.attach(this, tel, "dialing")
             rec = r
             // 车机拨出(ATD)后模拟对端 3s 摘机 —— 否则车机永远停在"拨号中"。
-            // 按记录身份校验(=== rec): 双通话时不能把别人的路接通
+            // 身份双校验(第十二轮): 记录仍在状态机里(owns) 且仍处拨号态 ——
+            // 3s 内被挂掉的路 state 已被 teardown 置 "ended", 不得再"幽灵接通"
             if (CallEngine.autoAnswerOutgoing) {
                 main.postDelayed({
                     try {
-                        if (r.state == "dialing") {
+                        if (CallEngine.owns(r) && r.state == "dialing") {
                             CallEngine.activate(
                                 r, EventLog.CALL_ACTIVE, "app",
                                 "拨出 ${r.number} 自动接通(模拟对端 3s 摘机)"
@@ -101,7 +103,10 @@ class VConnection(private val tel: String) : Connection() {
         EventLog.add(EventLog.CAR_ANSWER, "car", "车机按了【接听】(onAnswer) 号码=$tel")
         // stateEvt=null: 车机接听沿用旧例只发 CAR_ANSWER 不发 CALL_ACTIVE;
         // 若另一路在通话中, activate 内部自动保持它(发 CALL_HELD/app)
-        CallEngine.activate(rec, null, "car", "")
+        try {
+            CallEngine.activate(rec, null, "car", "")
+        } catch (_: Throwable) {
+        }
     }
 
     override fun onAnswer() = answered()
@@ -142,6 +147,8 @@ class VConnection(private val tel: String) : Connection() {
 
     override fun onHold() {
         EventLog.add(EventLog.CAR_HOLD, "car", "车机按了【保持】(onHold) 号码=$tel")
+        // 真机 CHLD 只作用于 active: 响铃/拨号路不存在"保持", 按键照记但不改状态(第十二轮)
+        if (rec.state != "active") return
         try {
             CallEngine.holdRec(rec, EventLog.CALL_HELD, "car", "车机保持")
         } catch (_: Throwable) {
@@ -159,6 +166,13 @@ class VConnection(private val tel: String) : Connection() {
 
     override fun onPlayDtmfTone(c: Char) {
         EventLog.add(EventLog.CAR_DTMF, "car", "车机 DTMF 按键: $c")
+    }
+
+    /** 通话音频路由变化: 车机通话界面/手机通话 UI 的"声音切换"(蓝牙/听筒/扬声器)
+     *  最终都落到这 —— 对端音频必须跟着路由走。第十二轮前 CallAudioEngine 把播放器
+     *  硬绑 SCO, 切到手机后手机无声、车机照响(真机: 切哪出哪)。 */
+    override fun onCallAudioStateChanged(state: CallAudioState?) {
+        state?.let { CallAudioEngine.onRouteChanged(it.route) }
     }
 
     override fun onStopDtmfTone() {

@@ -36,6 +36,8 @@ object EventLog {
     const val CALL_AUDIO_END = "CALL_AUDIO_END"; const val CALL_AUDIO_FOLLOW = "CALL_AUDIO_FOLLOW"
     /** 通话抢媒体焦点(第十一轮): 来电/接通暂停媒体, 全部通话结束自动续播 */
     const val MEDIA_CALL_PAUSE = "MEDIA_CALL_PAUSE"; const val MEDIA_CALL_RESUME = "MEDIA_CALL_RESUME"
+    /** 通话音频路由切换(第十二轮): 蓝牙/听筒/扬声器, 对端声音跟随 */
+    const val CALL_AUDIO_ROUTE = "CALL_AUDIO_ROUTE"
     /** 蓝牙链路 */ const val BT_ACL_CONNECTED = "BT_ACL_CONNECTED"
     const val BT_ACL_DISCONNECTED = "BT_ACL_DISCONNECTED"
     const val BT_DISCONNECT = "BT_DISCONNECT"

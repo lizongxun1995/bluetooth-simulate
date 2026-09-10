@@ -139,6 +139,9 @@ play↔pause 循环干净；双并发 logcat 流各 45/45 行共存；Python 重
 | T15 | 双通话各自的对端音频 | HFP 单 SCO：车机永远只听得到 active 路；被保持那路声音由网络侧处理，车机不可闻 | 每路 CallRec 独立绑 audioName/loop/进度；切换 followForeground() 换源续播、无 active 即静音；手动 stop 解绑；两路同时混音刻意不做（真机不存在） | ✅ |
 | T16 | 挂 active 后剩 held 的声音 | 真机挂断当前通话，另一路立刻继续有声（自动取回） | 同 T13：teardown 自动 activate + CALL_AUDIO_FOLLOW 续播（设备实测 A 从 3s 续）；事件链 CALL_ENDED→CALL_ACTIVE(app)→CALL_AUDIO_FOLLOW | ✅ |
 | T17 | 通话中的媒体 | 真机：铃声一响媒体暂停（AVRCP 报 paused），全部通话结束自动续播；通话中手动操作=用户意图优先 | attach(ringing/dialing)+activate 兜底 → pauseForCall()（MEDIA_CALL_PAUSE）；clearAll → resumeAfterCall()（MEDIA_CALL_RESUME）；手动播放/暂停清 pausedByCall 标记 | ✅ |
+| T18 | 连挂两路/拨出即取消 | 全部拆净、无"挂不掉的僵尸通话"；拨出 3s 内取消无幽灵接通 | teardown 进门置终态 + 复活延迟 300ms 重验（身份+状态）；3s 摘机定时器 owns+state 双校验（第十二轮车机实测事故驱动） | ⏳ |
+| T19 | 通话中切声音到手机 | 对端音频跟到听筒/扬声器、车机静音；切回蓝牙恢复；接通默认走蓝牙 | VConnection.onCallAudioStateChanged → CallAudioEngine 跟踪路由换绑/清绑；activate 显式请求 SCO；SCO 设备迟到后台重试（CALL_AUDIO_ROUTE 事件） | ⏳ |
+| T20 | 单曲/跳回自身切歌 | 真机=从头重播（不是续播） | restartIfSameReal()：同文件 seekTo(0)+清 seek 防回弹窗口 | ⏳ |
 | — | 暂停态车机切歌 | 车机上应能切 | 代码侧状态机已对齐(事件+元数据可查)，**待车机实测裁决**（EMUI 是否丢键存疑，见 DEV 清单） | ⏳ |
 
 ## 7. 与真机的已知偏差清单（测试有效性边界）
