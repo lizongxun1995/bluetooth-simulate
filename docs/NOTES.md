@@ -1092,3 +1092,17 @@ setActive 拉起来, Telecom 状态错乱(车机看 HFP 还有通话, 手机侧�
 连挂两路清干净、拨出 3s 内取消无幽灵、车机/手机切路由声音跟随、挂 active 后 held
 约 0.3s 恢复、单曲 next 从头播。若再遇僵尸通话先试 PC 侧全挂(hangup number=all),
 能清=我们状态机的锅, 不能清=Telecom 侧(需本轮修复装机后复测)。
+
+## 十、小修 —— 接口规范审查落地: 事件名词典化 — 2026-09-08
+
+审查结论(全量 AST 扫签名 + 断言栈人工审): kwargs 化/断言四件套合规且有测试锁定,
+唯一实质薄弱点=事件名双源(Kotlin 常量 ↔ Python 裸字符串)无机器校验, 且已发生一例
+漂移: CMD_DIAL 在 VPCS.kt 是裸字面量未进 EventLog 常量表(test_lib 靠重复字符串恰好对上)。
+
+- Kotlin: CMD_DIAL 收进 EventLog 常量表(与 CAR_DIAL 同型不同 src), 引用点改常量;
+- test_lib 新增 test_event_names_dict: 提取四个 .py 里带事件前缀(CAR/CMD/CALL/RING/
+  MEDIA/BT/CONTACTS)的引号字符串, 断言 ⊆ EventLog.kt 常量表 —— 拼错/未收编/改名漏改
+  在无设备单测直接红, 不再等到真机断言静默永不命中。普通常量(CREATE_NO_WINDOW 等)
+  无前缀不误入, 零排除表;
+- 纯重构零行为变化(发射的字符串原样), 但按纪律 APK 版本对齐: 0.8.4/versionCode 7,
+  lib/wheel 0.8.4, 三产物重建内嵌一致。test_lib 14 组全绿; 签名契约仍 77。

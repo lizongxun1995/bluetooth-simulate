@@ -6,6 +6,8 @@
 """
 import inspect
 import json
+import os
+import re
 import time
 
 import vphone_lib
@@ -320,11 +322,35 @@ def test_signature_contract():
     ok(f"签名契约: {checked} 个参数全部 KEYWORD_ONLY")
 
 
+def test_event_names_dict():
+    """事件名词典: PC 侧四个 .py 里出现的裸事件名(带事件前缀的引号字符串)必须
+    存在于 APK EventLog.kt 常量表 —— 事件名是双源(Kotlin 常量 ↔ Python 裸字符串)
+    手工保持一致的, 本测试把"手工核对"固化成机器核对:
+    拼错/未收编/改名漏改, 在无设备单测里直接红, 而不是在真机断言时静默永不命中。
+    (动机: CMD_DIAL 曾是 Kotlin 侧裸字面量未进常量表, 靠 test_lib 重复字符串恰好对上。)"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    kt = open(os.path.join(here, "app/src/main/java/com/bt/vphone/EventLog.kt"),
+              encoding="utf-8").read()
+    truth = set(re.findall(r'const val [A-Z_]+ = "([A-Z_]+)"', kt))
+    assert len(truth) >= 30, f"EventLog.kt 常量提取异常(仅 {len(truth)} 个, 正则过期?)"
+    # 事件前缀识别: 全大写引号字符串且以已知事件前缀开头才算事件引用 ——
+    # "CREATE_NO_WINDOW"/"VP_HOME_SERIAL" 这类普通常量不会误入
+    evt_re = re.compile(r'"((?:CAR|CMD|CALL|RING|MEDIA|BT|CONTACTS)_[A-Z_]+)"')
+    used = {}
+    for fn in ("vphone_lib.py", "test_lib.py", "vphone_gui.py", "vphone_ctl.py"):
+        with open(os.path.join(here, fn), encoding="utf-8") as f:
+            for name in evt_re.findall(f.read()):
+                used.setdefault(name, fn)
+    bad = {k: v for k, v in used.items() if k not in truth}
+    assert not bad, f"PC 侧引用了 EventLog.kt 不存在的事件名(拼错/未收编): {bad}"
+    ok(f"事件名词典: PC 侧引用 {len(used)} 个事件名, 全部存在于 EventLog.kt 常量表({len(truth)} 个)")
+
+
 if __name__ == "__main__":
     print("== vphone_lib 无设备单测 ==")
     for t in (test_vevent, test_events_snapshot, test_wait_event, test_expect_event,
               test_expect_no_event, test_timeout0_peek, test_multicall_commands,
               test_multicall_scenario, test_call_races, test_kwargs_only,
-              test_signature_contract):
+              test_signature_contract, test_event_names_dict):
         t()
     print(f"== 全部通过 ({PASS} 组) ==")

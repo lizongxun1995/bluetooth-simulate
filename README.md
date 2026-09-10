@@ -24,7 +24,7 @@
 ```bash
 # 换机器免装版: vphone/dist/vphone_gui.exe 双击（唯一前提=手机 USB 驱动）
 # 开发机(三种任选):
-pip install vphone/dist_py/vphone-0.8.3-py3-none-any.whl   # 装库+CLI+GUI 命令, 零第三方依赖
+pip install vphone/dist_py/vphone-0.8.4-py3-none-any.whl   # 装库+CLI+GUI 命令, 零第三方依赖
 cd vphone
 python vphone_ctl.py --serial <手机序列号> install   # 装机并拉起服务(华为可能要点安装确认)
 python vphone_gui.py --serial <手机序列号>            # 图形控制台(或命令 vphone-gui)

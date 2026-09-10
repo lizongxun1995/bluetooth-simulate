@@ -62,7 +62,8 @@ class VPhoneConnectionService : ConnectionService() {
         // 来处区分: CallEngine.dial() 置位=PC 指令; 未置位=车机 ATD 直接拨出
         val fromCar = !CallEngine.consumeDialFromCmd()
         EventLog.add(
-            if (fromCar) EventLog.CAR_DIAL else "CMD_DIAL", if (fromCar) "car" else "cmd",
+            if (fromCar) EventLog.CAR_DIAL else EventLog.CMD_DIAL,
+            if (fromCar) "car" else "cmd",
             if (fromCar) "车机拨出(ATD) 号码=$tel" else "指令拨出 号码=$tel"
         )
         return VConnection(tel).apply {

@@ -22,6 +22,7 @@ object EventLog {
     /** 车机拒接 */  const val CAR_REJECT = "CAR_REJECT"
     /** 车机挂断 */  const val CAR_HANGUP = "CAR_HANGUP"
     /** 车机拨出(ATD) */ const val CAR_DIAL = "CAR_DIAL"
+    /** 指令拨出(PC 指令侧, 与 CAR_DIAL 同型不同 src); 曾是裸字面量, 词典测试防再漂 */ const val CMD_DIAL = "CMD_DIAL"
     /** 车机保持/恢复 */ const val CAR_HOLD = "CAR_HOLD"; const val CAR_UNHOLD = "CAR_UNHOLD"
     /** 车机 DTMF 按键 */ const val CAR_DTMF = "CAR_DTMF"
     /** 车机媒体按键 */ const val CAR_PLAY = "CAR_PLAY"; const val CAR_PAUSE = "CAR_PAUSE"
