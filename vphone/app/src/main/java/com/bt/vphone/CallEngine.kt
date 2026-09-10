@@ -26,7 +26,9 @@ import android.util.Log
  * 多路模型(第八轮, 对齐真机 GSM 呼叫等待语义):
  *   - 最多两路: 1 active + 1 (held | ringing等待 | dialing)
  *   - 通话中 incoming = 呼叫等待(CALL_WAITING); answer 自动保持当前 active
- *   - 双通话时 hold(on=0)/swap = 切换; 挂掉 active 后 held 不自动恢复(真机行为)
+ *   - 双通话时 hold(on=0)/swap = 切换; 挂掉 active 后 held 自动恢复
+ *     (第十一轮纠正: 真机 GSM CHLD=1 语义 = 释放 active 时网络自动取回保持路,
+ *      第八轮"held 保持不自动恢复"是错误假设, 实测车机用户预期=对端继续有声)
  *   - 任一时刻最多一路 active —— activate() 统一编排"先保持其它 active"
  *
  * 单路状态转换(真机基准: 任何失败/拆线路径都必须归回 idle, 不留悬挂 connection):
@@ -240,17 +242,18 @@ object CallEngine {
     }
 
     /** 挂断。number=null 挂前景(active>ringing>dialing>held, 对齐车机红键);
-     *  number=号码 挂指定一路; number="all" 全挂复位。挂掉 active 后 held 保持 held
-     *  不自动恢复(真机行为), 由 hold(on=0) 手动恢复。 */
+     *  number=号码 挂指定一路; number="all" 全挂复位。挂掉 active 后若剩 held,
+     *  teardown 内自动取回保持路(真机 CHLD=1 语义, 第十一轮)。 */
     fun hangup(number: String? = null): String {
         if (number == "all") {
             if (calls.isEmpty()) return "本就无通话"
             val n = calls.size
             calls.toList().forEach {
                 // teardown 不发事件(契约: 事件由调用方先发), 全挂也要逐路发 CALL_ENDED,
-                // 否则脚本清场后的挂断断言会空窗
+                // 否则脚本清场后的挂断断言会空窗; autoResume=false: 全挂不触发
+                // "挂 active 自动恢复 held"(否则中途响起一声再被挂, 事件流脏)
                 EventLog.add(EventLog.CALL_ENDED, "cmd", "指令挂断 (${it.number}) [全挂]")
-                teardown(it)
+                teardown(it, autoResume = false)
             }
             return "已全部挂断(${n}路) ${callsDesc()}"
         }
@@ -304,6 +307,8 @@ object CallEngine {
         rec.state = "active"
         if (stateEvt != null) EventLog.add(stateEvt, src, "$msg → active")
         evt("呼叫状态 → active (${rec.number})")
+        // 兜底: 来电响铃期间用户手动放了音乐的话, 接通这一刻也要停(真机=通话焦点)
+        MediaEngine.pauseForCall("通话激活 ${rec.number}")
         CallAudioEngine.followForeground()      // 换了 active 路 → 车机听到的对端音频跟随
     }
 
@@ -315,15 +320,25 @@ object CallEngine {
         if (follow && activeRec() == null) CallAudioEngine.followForeground()   // 保持后无 active → 静音
     }
 
-    /** 机械拆线一路(事件由调用方先发): 移除记录; 最后一路才全清(通话音频随末路停)。 */
-    fun teardown(rec: CallRec) {
+    /** 机械拆线一路(事件由调用方先发): 移除记录; 最后一路才全清(通话音频随末路停)。
+     *  autoResume: 挂的是 active 且剩 held 时, 真机 GSM(CHLD=1 语义)会自动取回保持路 ——
+     *  剩余 held 自动激活(其对端音频 followForeground 续播); hangup("all") 传 false。 */
+    fun teardown(rec: CallRec, autoResume: Boolean = true) {
         try {
             rec.conn?.setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
             rec.conn?.destroy()
         } catch (_: Throwable) {
         } finally {
             calls.removeAll { it === rec }
-            if (calls.isEmpty()) clearAll() else CallAudioEngine.followForeground()
+            if (calls.isEmpty()) clearAll()
+            else if (autoResume && activeRec() == null) {
+                val held = calls.firstOrNull { it.state == "held" }
+                if (held != null)
+                    activate(held, EventLog.CALL_ACTIVE, "app",
+                        "active挂断 → 保持路自动恢复(真机CHLD=1)")
+                else
+                    CallAudioEngine.followForeground()   // 剩的是 ringing(等待), 声音停即可
+            } else CallAudioEngine.followForeground()
         }
     }
 
@@ -332,16 +347,21 @@ object CallEngine {
     fun attach(conn: Connection, tel: String, initial: String): CallRec {
         val rec = CallRec(tel, conn, initial)
         calls.add(rec)
+        // 真机: 电话铃声一响/一拨出, 媒体就丢音频焦点暂停(不是等接通) —— 进度停走,
+        // AVRCP 给车机的也是 paused; 全部通话结束 resumeAfterCall 自动续播
+        if (initial == "ringing") MediaEngine.pauseForCall("来电 $tel")
+        else if (initial == "dialing") MediaEngine.pauseForCall("去电 $tel")
         evt("呼叫连接建立: $initial 号码=$tel")
         return rec
     }
 
     /** 通话结束统一清理(全部拆完才到这) —— 真机基准: 挂断即归 idle、号码清空、
-     *  通话音频停(SCO 已掉, 残留只会占着播放器)。 */
+     *  通话音频停(SCO 已掉, 残留只会占着播放器); 音频焦点归还 → 媒体自动续播。 */
     fun clearAll() {
         calls.clear()
         pendingIncomingNumber = null
         try { CallAudioEngine.stop() } catch (_: Throwable) {}
+        try { MediaEngine.resumeAfterCall() } catch (_: Throwable) {}
     }
 
     fun status(): String =

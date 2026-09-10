@@ -72,6 +72,28 @@ object MediaEngine {
     private var focusListener: AudioManager.OnAudioFocusChangeListener? = null
     private var focused = false
 
+    // 通话抢焦点标记(第十一轮): 真机电话一响/接通, 媒体 App 丢焦点暂停(进度停走,
+    // AVRCP 报 paused); 全部通话结束焦点归还自动续播。期间任何手动/车机的播放、
+    // 暂停操作都清标记 —— 通话结束只恢复"被通话暂停的", 不抢用户自己的意图
+    private var pausedByCall = false
+
+    /** 通话开始时由 CallEngine 调(来电落地/接通): 模拟电话抢媒体焦点。
+     *  未在播返回不动(事件也不发 —— 没发生可闻变化就不留噪音)。 */
+    fun pauseForCall(why: String) {
+        if (!playing) return
+        pausedByCall = true
+        EventLog.add(EventLog.MEDIA_CALL_PAUSE, "app", "$why → 媒体暂停(音频焦点被通话抢占)")
+        doPause()
+    }
+
+    /** 全部通话结束(clearAll): 焦点归还, 真机音乐自动续播。只恢复被通话暂停的。 */
+    fun resumeAfterCall() {
+        if (!pausedByCall) return
+        pausedByCall = false
+        EventLog.add(EventLog.MEDIA_CALL_RESUME, "app", "通话结束, 音频焦点归还 → 媒体自动恢复播放")
+        doPlay()
+    }
+
     fun init(ctx: Context) {
         app = ctx.applicationContext
     }
@@ -84,11 +106,13 @@ object MediaEngine {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
                     EventLog.add(EventLog.CAR_PLAY, "car", "媒体按键【播放】(车机或手机通知栏)")
+                    pausedByCall = false   // 用户/车机在通话中主动放歌 = 覆盖自动暂停, 挂断后不再自动恢复
                     doPlay()
                 }
 
                 override fun onPause() {
                     EventLog.add(EventLog.CAR_PAUSE, "car", "媒体按键【暂停】(车机或手机通知栏)")
+                    pausedByCall = false   // 同上: 主动暂停 = 用户接管, 通话结束不自动续播
                     doPause()
                 }
 
@@ -104,6 +128,7 @@ object MediaEngine {
 
                 override fun onStop() {
                     EventLog.add(EventLog.CAR_STOP, "car", "媒体按键【停止】(车机或手机通知栏)")
+                    pausedByCall = false
                     doPause()
                 }
 
@@ -175,6 +200,7 @@ object MediaEngine {
 
     fun play(): String {
         EventLog.add(EventLog.CMD_PLAY, "cmd", "指令播放")
+        pausedByCall = false   // 手动播放 = 用户接管(通话中放歌是用户的事), 挂断后不自动恢复
         return doPlay()
     }
 
@@ -192,6 +218,7 @@ object MediaEngine {
 
     fun pause(): String {
         EventLog.add(EventLog.CMD_PAUSE, "cmd", "指令暂停")
+        pausedByCall = false   // 手动暂停 = 用户接管, 通话结束不自动续播
         return doPause()
     }
 

@@ -53,7 +53,13 @@ WiFi 直连 `http://<手机IP>:8800`。返回纯文本，**例外：`/events` �
 
 > **多路通话（GSM 真机语义）**：最多 2 路。通话中 `incoming` = 呼叫等待（新路 ringing，原路不动）；
 > `answer` 接听等待路时**原 active 自动保持**；双通话时 `hold?on=0` 与 `swap` 等价（互换 active/held）；
-> 挂掉 active 后 held **保持不自动恢复**（`hold?on=0` 手动恢复）；`/status` 里 `calls=[active:138…,held:10086]` 逐路可见。
+> **挂掉 active 后剩余的 held 自动恢复**（真机 GSM CHLD=1 语义：释放 active 时网络自动取回保持路，
+> 对端音频随之续播；第十一轮纠正——第八轮"held 保持不自动恢复"是错误假设）；`/status` 里
+> `calls=[active:138…,held:10086]` 逐路可见。
+>
+> **媒体焦点（真机音频焦点行为）**：媒体在播时来电铃声一响（或拨出）媒体即**暂停**（进度停走、
+> AVRCP 报 paused，事件 `MEDIA_CALL_PAUSE`）；全部通话结束焦点归还，媒体**自动续播**
+> （`MEDIA_CALL_RESUME`）。通话中的手动播放/暂停 = 用户接管，挂断后不再自动恢复。
 
 | 端点 | 参数 | 说明 | 通道 |
 |---|---|---|---|
@@ -264,11 +270,13 @@ vphone <cmd> ...                        # pip 安装后等价命令(装到 PATH)
 | `CAR_ANSWER` / `CAR_REJECT` / `CAR_HANGUP` | car | 车机电话键 |
 | `CAR_DIAL` | car | 车机发起拨号（ATD） |
 | `CAR_HOLD` / `CAR_UNHOLD` / `CAR_DTMF` | car | 车机保持 / 取消保持 / DTMF |
-| `RING_IN` / `CALL_ACTIVE` / `CALL_ENDED` | app/sys/cmd | 通话状态机迁移（detail 带号码；全挂逐路发 CALL_ENDED） |
+| `RING_IN` / `CALL_ACTIVE` / `CALL_ENDED` | app/sys/cmd | 通话状态机迁移（detail 带号码；全挂逐路发 CALL_ENDED）。挂掉 active 后保持路**自动恢复**也发 `CALL_ACTIVE`（src=app，detail 含"自动恢复(真机CHLD=1)"） |
 | `CALL_WAITING` | app | 通话中第二路来电进入等待（GSM 呼叫等待；detail 带新号码） |
 | `CALL_HELD` | app/cmd/car | 一路被保持（接听等待路自动保持=app，swap/hold=cmd，车机键=car） |
 | `CMD_PLAY/PAUSE/NEXT/PREV/...` | cmd | PC 指令回显（断言"指令已生效"用） |
 | `MEDIA_TRACK_END` / `MEDIA_UPLOAD` / `MEDIA_SCO_RELEASED` | app/cmd | 播完 / 上传 / SCO 释放 |
+| `MEDIA_CALL_PAUSE` | app | 来电/去电/接通时媒体被通话抢焦点而暂停（真机音频焦点行为；媒体未在播时不发） |
+| `MEDIA_CALL_RESUME` | app | 全部通话结束、焦点归还 → 媒体自动续播（仅恢复"被通话暂停的"；通话中手动操作过则不发） |
 | `CALL_AUDIO_END` | app | 通话音频自然播完（loop=0；detail 带文件名+号码，手动 stop 不发） |
 | `CALL_AUDIO_FOLLOW` | app | 通话切换后对端音频跟随换源/静音（detail 带新 active 路号码+文件+续播位置；"切换后车机听到的声音变了"的断言证据） |
 | `BT_ACL_CONNECTED/DISCONNECTED` `BT_A2DP_CONNECTED/DISCONNECTED` `BT_HFP_CONNECTED/DISCONNECTED` | bt | 链路迁移（断连/回连测试主力） |

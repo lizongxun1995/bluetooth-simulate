@@ -1016,3 +1016,33 @@ GUI(vphone_gui.py, 0.8.1):
 (隐藏窗口真 Listbox+StringVar trace)验证回填/过滤/选中保持/无命中兜底全绿;
 test_lib 10 组回归全绿; wheel 0.8.1 fresh venv 冒烟通过。APK 无改动(0.8.0 不动)。
 渲染观感按惯例待真实桌面过眼。
+
+## 八、第十一轮 —— 两处真机保真度纠正(挂断语义+媒体焦点) — 2026-09-10
+
+用户台架实测逮到两个"不像真机", 都是多轮通话功能出来后才能暴露的组合态:
+
+**① 挂掉 active 通话后, 另一路保持沉默。** 根因是第八轮定语义时的错误假设
+"挂掉 active 后 held 保持 held 不自动恢复(真机行为)" —— 实际真机 GSM 是 CHLD=1
+语义: 释放 active 时网络**自动取回保持路**(挂掉 B, A 立刻继续有声)。修复:
+teardown 在移除记录后检测"无 active 且有 held" → activate(第一个 held), 对端音频
+followForeground 从各自进度续播; hangup("all") 传 autoResume=false 抑制(全挂不诈尸,
+否则第一路 teardown 会先激活 held 响一声再被挂, 事件流脏)。
+事件链: CALL_ENDED(挂的) → CALL_ACTIVE(app, "自动恢复(真机CHLD=1)") →
+CALL_AUDIO_FOLLOW(续 Xs)。车机侧 onDisconnect 挂 active 走同一 teardown, 同样自动恢复。
+
+**② 电话接通时媒体音乐还在"播"(进度在走, 没声音)。** 真机此时媒体 App 因音频焦点
+被通话抢占而暂停 —— 进度停走, AVRCP 给车机的也是 paused。修复: MediaEngine 加
+pausedByCall 标记; CallEngine.attach(ringing/dialing) 来电/去电落地即 pauseForCall()
+(铃声一响就停, 不是等接通), activate() 再兜底一次(响铃中手动放歌的场景);
+clearAll(全部通话结束) → resumeAfterCall() 自动续播。手动/车机的播放暂停操作清标记
+—— 挂断后只恢复"被通话暂停的", 不抢用户意图。新事件 MEDIA_CALL_PAUSE/RESUME。
+
+设备验收 15 项全绿: S1 用户原场景(媒体播放→来电即冻结→双路双音→挂B→A自动恢复
+且 _short10s 从 3s 续播→全程媒体暂停→全挂→媒体自动恢复进度 1→2s);
+S2 回归(挂 held, active 那路音频零中断、零切换事件);
+S3 焦点接管(响铃中手动放歌=接管但接通仍停/通话中手动暂停=挂断后不自动恢复)。
+
+APK 0.8.2(versionCode 5)/lib 0.8.2; test_lib 多路场景回放按新事件链重写
+(挂前景→自动恢复, 两端补媒体焦点事件), 10 组全绿; exe/wheel 重建。
+另: 验收脚本曾把 /status 里媒体行 focus=held 误当通话 held 断言 —— /status 是多引擎
+汇总行, 断言通话态要切出 calls= 段看, 别整行 substring。

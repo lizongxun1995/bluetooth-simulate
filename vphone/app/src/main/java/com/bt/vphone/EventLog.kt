@@ -34,6 +34,8 @@ object EventLog {
     const val CMD_NEXT = "CMD_NEXT"; const val CMD_PREV = "CMD_PREV"
     const val MEDIA_TRACK_END = "MEDIA_TRACK_END"; const val MEDIA_UPLOAD = "MEDIA_UPLOAD"
     const val CALL_AUDIO_END = "CALL_AUDIO_END"; const val CALL_AUDIO_FOLLOW = "CALL_AUDIO_FOLLOW"
+    /** 通话抢媒体焦点(第十一轮): 来电/接通暂停媒体, 全部通话结束自动续播 */
+    const val MEDIA_CALL_PAUSE = "MEDIA_CALL_PAUSE"; const val MEDIA_CALL_RESUME = "MEDIA_CALL_RESUME"
     /** 蓝牙链路 */ const val BT_ACL_CONNECTED = "BT_ACL_CONNECTED"
     const val BT_ACL_DISCONNECTED = "BT_ACL_DISCONNECTED"
     const val BT_DISCONNECT = "BT_DISCONNECT"

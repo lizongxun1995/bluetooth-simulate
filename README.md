@@ -12,9 +12,9 @@
 | 能力 | 说明 | 状态 |
 |---|---|---|
 | 配对全流程控制 | 扫描/配对不出 App，配对弹窗自动确认，解绑/断连/回连；GUI 列表模糊过滤(名/MAC) | ✅ 台架全通 |
-| 音乐(A2DP/AVRCP) | 元数据任意伪造；电脑音频上传→车机真实出声；静音流保活模式 | ✅ |
+| 音乐(A2DP/AVRCP) | 元数据任意伪造；电脑音频上传→车机真实出声；静音流保活模式；来电自动暂停/挂断自动续播(真机焦点) | ✅ |
 | 车机按键回流 | 播放/暂停/切歌/拖进度/接听/挂断/拨号 全部落结构化事件可断言 | ✅ |
-| 通话(HFP) | 注入来电/拨号/保持/DTMF/通话中自定义音频(对端说话) | ✅ |
+| 通话(HFP) | 注入来电/拨号/保持/DTMF/通话中自定义音频(对端说话)；多路等待/切换、挂 active 自动恢复保持路 | ✅ |
 | 通讯录(PBAP) | 批量 1 万/自定义联系人写入 → 车机通讯录压测 | ✅ |
 | 断连/回连测试 | 保配对断开、手机侧回连，ACL/A2DP/HFP 链路事件断言 | ✅ |
 | 发布 | 单文件 exe（内嵌 APK+adb），换机器双击即用 | ✅ |
@@ -24,7 +24,7 @@
 ```bash
 # 换机器免装版: vphone/dist/vphone_gui.exe 双击（唯一前提=手机 USB 驱动）
 # 开发机(三种任选):
-pip install vphone/dist_py/vphone-0.8.1-py3-none-any.whl   # 装库+CLI+GUI 命令, 零第三方依赖
+pip install vphone/dist_py/vphone-0.8.2-py3-none-any.whl   # 装库+CLI+GUI 命令, 零第三方依赖
 cd vphone
 python vphone_ctl.py --serial <手机序列号> install   # 装机并拉起服务(华为可能要点安装确认)
 python vphone_gui.py --serial <手机序列号>            # 图形控制台(或命令 vphone-gui)

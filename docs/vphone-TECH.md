@@ -134,9 +134,11 @@ play↔pause 循环干净；双并发 logcat 流各 45/45 行共存；Python 重
 | T10 | 通话中来电 | 呼叫等待：新路响铃、原路不动，最多 2 路 | waiting 注入（RING_IN+CALL_WAITING），第 3 路明确拒绝 | ✅ |
 | T11 | 接听等待电话 | 原 active 自动保持、新路上线，恒一 active | `answer()` 编排：先 hold 其它 active 再 setActive；手动 hold 后接听同样支持 | ✅ |
 | T12 | 双通话切换 | 互换 active/held | `swap()` / `hold(on=0)` 等价；车机 CHLD 键走 onHold/onUnhold 回调 | ✅ |
-| T13 | 挂一路 | 挂 active 后另一路保持 held 不自动恢复；挂 held 不影响 active | hangup 选择性/前景优先级；恢复须显式 `hold(on=0)` | ✅ |
+| T13 | 挂一路 | 挂 active 后剩 held **自动恢复**（真机 CHLD=1：释放 active 网络取回保持路）；挂 held 不影响 active | teardown 检测"无 active 且有 held"→ activate，对端音频续播；hangup(all) 抑制诈尸。~~原"held 不自动恢复"为错误假设，第十一轮纠正~~ | ✅ |
 | T14 | 通话中拨出 | 新呼叫接通时原通话自动保持 | dial 第二路 + 3s 摘机时 activate（自动 hold 原路） | ✅ |
 | T15 | 双通话各自的对端音频 | HFP 单 SCO：车机永远只听得到 active 路；被保持那路声音由网络侧处理，车机不可闻 | 每路 CallRec 独立绑 audioName/loop/进度；切换 followForeground() 换源续播、无 active 即静音；手动 stop 解绑；两路同时混音刻意不做（真机不存在） | ✅ |
+| T16 | 挂 active 后剩 held 的声音 | 真机挂断当前通话，另一路立刻继续有声（自动取回） | 同 T13：teardown 自动 activate + CALL_AUDIO_FOLLOW 续播（设备实测 A 从 3s 续）；事件链 CALL_ENDED→CALL_ACTIVE(app)→CALL_AUDIO_FOLLOW | ✅ |
+| T17 | 通话中的媒体 | 真机：铃声一响媒体暂停（AVRCP 报 paused），全部通话结束自动续播；通话中手动操作=用户意图优先 | attach(ringing/dialing)+activate 兜底 → pauseForCall()（MEDIA_CALL_PAUSE）；clearAll → resumeAfterCall()（MEDIA_CALL_RESUME）；手动播放/暂停清 pausedByCall 标记 | ✅ |
 | — | 暂停态车机切歌 | 车机上应能切 | 代码侧状态机已对齐(事件+元数据可查)，**待车机实测裁决**（EMUI 是否丢键存疑，见 DEV 清单） | ⏳ |
 
 ## 7. 与真机的已知偏差清单（测试有效性边界）

@@ -168,8 +168,10 @@ def test_multicall_commands():
 
 
 def test_multicall_scenario():
-    """多路时序回放: 等待→接听自动保持→切换→挂前景→恢复→全挂逐路 CALL_ENDED。
-    信封=累积历史(仿真服务端); 命中事件 id 作下一步 since —— 与真机脚本同构。"""
+    """多路时序回放(第十一轮语义): 等待→接听自动保持→切换→挂前景→held自动恢复→全挂。
+    信封=累积历史(仿真服务端); 命中事件 id 作下一步 since —— 与真机脚本同构。
+    事件链对齐真机 GSM: 来电即抢媒体焦点(MEDIA_CALL_PAUSE); 挂 active 后保持路
+    自动取回(CALL_ACTIVE/app 自动恢复); 全挂归还焦点(MEDIA_CALL_RESUME)。"""
     A, B = "13800138000", "13900139000"
     hist = {}
 
@@ -179,17 +181,19 @@ def test_multicall_scenario():
 
     vp = fake_staged(
         {"last": 0, "events": []},
-        h(ev(1, "RING_IN", "cmd", f"注入来电 {A} (车机应弹来电UI)")),
-        h(ev(2, "CALL_ACTIVE", "cmd", f"指令接听 {A} → active")),
-        h(ev(3, "RING_IN", "cmd", f"注入来电(等待路) {B}"),
-          ev(4, "CALL_WAITING", "app", f"第二路来电等待中 {B}")),
-        h(ev(5, "CALL_HELD", "app", f"接听 {B}, 原通话自动保持 ({A})"),
-          ev(6, "CALL_ACTIVE", "cmd", f"指令接听 {B} → active")),
-        h(ev(7, "CALL_HELD", "cmd", f"指令切换: 保持 ({B})"),
-          ev(8, "CALL_ACTIVE", "cmd", f"指令切换 → {A} → active")),
-        h(ev(9, "CALL_ENDED", "cmd", f"指令挂断 ({A})")),
-        h(ev(10, "CALL_ACTIVE", "cmd", f"指令恢复 {B} → active")),
-        h(ev(11, "CALL_ENDED", "cmd", f"指令挂断 ({B}) [全挂]")),
+        h(ev(1, "RING_IN", "cmd", f"注入来电 {A} (车机应弹来电UI)"),
+          ev(2, "MEDIA_CALL_PAUSE", "app", f"来电 {A} → 媒体暂停(音频焦点被通话抢占)")),
+        h(ev(3, "CALL_ACTIVE", "cmd", f"指令接听 {A} → active")),
+        h(ev(4, "RING_IN", "cmd", f"注入来电(等待路) {B}"),
+          ev(5, "CALL_WAITING", "app", f"第二路来电等待中 {B}")),
+        h(ev(6, "CALL_HELD", "app", f"接听 {B}, 原通话自动保持 ({A})"),
+          ev(7, "CALL_ACTIVE", "cmd", f"指令接听 {B} → active")),
+        h(ev(8, "CALL_HELD", "cmd", f"指令切换: 保持 ({B})"),
+          ev(9, "CALL_ACTIVE", "cmd", f"指令切换 → {A} → active")),
+        h(ev(10, "CALL_ENDED", "cmd", f"指令挂断 ({A})"),
+          ev(11, "CALL_ACTIVE", "app", f"active挂断 → 保持路自动恢复(真机CHLD=1) ({B}) → active")),
+        h(ev(12, "CALL_ENDED", "cmd", f"指令挂断 ({B}) [全挂]"),
+          ev(13, "MEDIA_CALL_RESUME", "app", "通话结束, 音频焦点归还 → 媒体自动恢复播放")),
     )
 
     def step(label, fn, *expects):
@@ -203,15 +207,17 @@ def test_multicall_scenario():
         step.m = m
 
     step.m = vp.event_watermark()                     # 对齐水位 0
-    step("A 来电", lambda: vp.incoming(number=A), ("RING_IN", A))
+    step("A 来电(媒体让焦点)", lambda: vp.incoming(number=A),
+         ("RING_IN", A), ("MEDIA_CALL_PAUSE", "媒体暂停"))
     step("接听 A", vp.answer, ("CALL_ACTIVE", A))
     step("B 等待", lambda: vp.incoming(number=B), ("CALL_WAITING", B))
     step("接听 B(A 自动保持)", vp.answer, ("CALL_HELD", A), ("CALL_ACTIVE", B))
     step("切换", vp.swap, ("CALL_HELD", B), ("CALL_ACTIVE", A))
-    step("挂前景 A", vp.hangup, ("CALL_ENDED", A))
-    step("恢复 B", lambda: vp.hold(on=False), ("CALL_ACTIVE", B))
-    step("全挂", lambda: vp.hangup(number="all"), ("CALL_ENDED", B))
-    ok("多路场景回放: 等待/自动保持/切换/挂前景/恢复/全挂 全链路事件断言")
+    step("挂前景 A(B 自动恢复)", vp.hangup,
+         ("CALL_ENDED", A), ("CALL_ACTIVE", "自动恢复"))
+    step("全挂 B(媒体恢复)", lambda: vp.hangup(number="all"),
+         ("CALL_ENDED", B), ("MEDIA_CALL_RESUME", "媒体自动恢复"))
+    ok("多路场景回放: 等待/自动保持/切换/挂前景自动恢复/全挂+媒体焦点 全链路事件断言")
 
 
 def test_kwargs_only():

@@ -7,7 +7,8 @@
              + 车机按键回流(expect_event CAR_PLAY/CAR_NEXT/...)
   门C(电话): incoming/dial/answer/hangup/hold/swap/dtmf/audio_bt + call_audio(通话中自定义音频)
              多路: 呼叫等待(通话中 incoming)/接听自动保持/切换 swap/选择性挂断 hangup(number=)/
-             各路独立"对端音频"(切换跟随, HFP 单 SCO 同真机)
+             各路独立"对端音频"(切换跟随, HFP 单 SCO 同真机)/挂 active 后保持路自动恢复(真机CHLD=1)
+             媒体焦点: 电话一响媒体即暂停(MEDIA_CALL_PAUSE), 全部通话结束自动续播(MEDIA_CALL_RESUME)
              + 车机接听/挂断回流(expect_event CAR_ANSWER/CAR_HANGUP/CAR_DIAL/...)
   联系人:    contacts_load(批量1w)/contacts_import(自定义)/contacts_clear —— PBAP 测车机通讯录
   蓝牙:      bt_scan/bt_bond/bt_unpair/bt_reconnect/bt_state/bt_enable (配对不出App)
@@ -51,7 +52,7 @@ REMOTE_PORT = 8800
 DEFAULT_LOCAL_PORT = 18800   # PC 侧 forward 端口(避开本机 8800 常见占用)
 ACCOUNT_ARGS = f"{PKG}/.VPhoneConnectionService VPHONE 0".split()
 
-__version__ = "0.8.1"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
+__version__ = "0.8.2"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
 
 
 # Windows: GUI(windowed exe)无控制台时, 每个 adb 子进程都会新弹一个黑窗 ——
