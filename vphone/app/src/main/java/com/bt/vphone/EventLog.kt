@@ -29,6 +29,7 @@ object EventLog {
     const val CAR_STOP = "CAR_STOP"; const val CAR_SEEK = "CAR_SEEK"
     /** 呼叫状态机 */ const val RING_IN = "RING_IN"; const val CALL_ACTIVE = "CALL_ACTIVE"
     const val CALL_HELD = "CALL_HELD"; const val CALL_ENDED = "CALL_ENDED"
+    const val CALL_WAITING = "CALL_WAITING"
     /** 媒体/音频 */ const val CMD_PLAY = "CMD_PLAY"; const val CMD_PAUSE = "CMD_PAUSE"
     const val CMD_NEXT = "CMD_NEXT"; const val CMD_PREV = "CMD_PREV"
     const val MEDIA_TRACK_END = "MEDIA_TRACK_END"; const val MEDIA_UPLOAD = "MEDIA_UPLOAD"

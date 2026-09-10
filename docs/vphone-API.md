@@ -51,13 +51,18 @@ WiFi 直连 `http://<手机IP>:8800`。返回纯文本，**例外：`/events` �
 
 ### 1.2 电话（门C）
 
+> **多路通话（GSM 真机语义）**：最多 2 路。通话中 `incoming` = 呼叫等待（新路 ringing，原路不动）；
+> `answer` 接听等待路时**原 active 自动保持**；双通话时 `hold?on=0` 与 `swap` 等价（互换 active/held）；
+> 挂掉 active 后 held **保持不自动恢复**（`hold?on=0` 手动恢复）；`/status` 里 `calls=[active:138…,held:10086]` 逐路可见。
+
 | 端点 | 参数 | 说明 | 通道 |
 |---|---|---|---|
-| `GET /call/incoming` | `number` | 注入来电（默认 13800138000） | 双 |
-| `GET /call/dial` | `number` | 模拟本机拨号（对端 3s 自动接通，见 auto-outgoing） | 双 |
-| `GET /call/answer` | — | PC 侧代接 | 双 |
-| `GET /call/hangup` | — | 挂断（任意状态，复位 idle） | 双 |
-| `GET /call/hold` | `on=0/1` | 通话保持/恢复 | 双 |
+| `GET /call/incoming` | `number` | 注入来电（默认 13800138000）。通话中=呼叫等待（发 `CALL_WAITING`）；已有 2 路时明确拒绝 | 双 |
+| `GET /call/dial` | `number` | 模拟本机拨号（对端 3s 自动接通，见 auto-outgoing）。通话中拨出=第二路，接通时原 active 自动保持 | 双 |
+| `GET /call/answer` | — | PC 侧代接（ringing 优先）；双通话时自动保持原 active | 双 |
+| `GET /call/hangup` | `number`(可选) | 缺省挂**前景**（active>ringing>dialing>held，对齐车机红键）；指定号码挂某一路；`all` 全挂复位 | 双 |
+| `GET /call/hold` | `on=0/1` | on=1 保持前景 active；on=0 恢复 held（双通话时=切换） | 双 |
+| `GET /call/swap` | — | 双通话时互换 active/held（与 hold?on=0 等价，断言脚本语义显式） | 双 |
 | `GET /call/dtmf` | `key` | DTMF 按键（0-9*#，需 active） | 双 |
 | `GET /call/audio-bt` | — | 通话音频切蓝牙 SCO | 双 |
 | `GET /call/auto-outgoing` | `on=0/1` | 车机拨出后是否 3s 自动接通（默认开） | 双 |
@@ -124,9 +129,24 @@ WiFi 直连 `http://<手机IP>:8800`。返回纯文本，**例外：`/events` �
 
 ### 2.2 门C 电话
 
-`incoming(number="13800138000")` `dial(number="10086")` `answer()` `hangup()`
-`hold(on=True)` `dtmf(key)` `audio_bt()`
+`incoming(number="13800138000")`（通话中=呼叫等待） `dial(number="10086")` `answer()`（自动保持原 active）
+`hangup(number=None)`（None=前景，号码=挂某路，`"all"`=全挂） `hold(on=True)`（on=0 双通话时=切换）
+`swap()` `dtmf(key)` `audio_bt()`
 `set_auto_outgoing(on=True)` `call_audio(name, loop=False)` `call_audio_stop()`
+
+多路通话典型断言（事件带号码，水位回放不漏）：
+
+```python
+vp.incoming(number="13800138000"); vp.answer()
+m = vp.event_watermark()
+vp.incoming(number="13900139000")                  # 第二路: 呼叫等待
+vp.expect_event(evt_type="CALL_WAITING", detail="13900139000", since=m, because="等待来电")
+vp.answer()                                          # 接听: A 自动保持, B 接通
+vp.expect_event(evt_type="CALL_HELD", detail="13800138000", since=m, because="A 被保持")
+vp.expect_event(evt_type="CALL_ACTIVE", detail="13900139000", since=m, because="B 接通")
+vp.swap()
+vp.hangup(number="13800138000")                     # 选择性挂 A; B 仍 held, hold(on=False) 恢复
+```
 
 通话音频进度不设包装方法（上位机直接解析原文一行）：
 
@@ -227,7 +247,7 @@ vphone <cmd> ...                        # pip 安装后等价命令(装到 PATH)
 |---|---|
 | 部署 | `start` `grant-perms` `enable-account` `enable-autoconfirm` `install [apk路径|--file]` `launch` |
 | 事件 | `events`（实时流 Ctrl+C 退出） `wait-event TYPE [TYPE...] [--detail 子串] [--timeout 30]` |
-| 电话 | `incoming [--num]` `dial` `answer` `hangup` `hold [--on]` `dtmf --key` `audio-bt` `call-audio --name [--loop]` `call-audio-stop` `auto-outgoing [--on]` |
+| 电话 | `incoming [--num]` `dial [--num]` `answer` `hangup [--num]`（缺省前景/号码/`all`） `hold [--on]` `swap` `dtmf --key` `audio-bt` `call-audio --name [--loop]` `call-audio-stop` `auto-outgoing [--on]` |
 | 媒体 | `track --title --artist --album --dur` `play` `pause` `next` `prev` `jump <idx>` `seek <秒>` `silence [--on]` `autoadvance [--on]` `playlist [--text|--file]` `playlist-get` `upload 文件...` `files` `del --name` `play-audio 文件...` `media-diag` |
 | 联系人 | `contacts-load [--count] [--prefix]` `contacts-file --file` `contacts-clear` `contacts-count` |
 | 蓝牙 | `bt-state` `bt-name [--name]` `bt-enable [--on]` `scan` `scan-result` `bond --mac` `unpair --mac` `disconnect [--mac] [--force]` `reconnect [--mac]` `allow-car [--mac]` |
@@ -243,8 +263,10 @@ vphone <cmd> ...                        # pip 安装后等价命令(装到 PATH)
 | `CAR_SEEK` | car/cmd | 拖进度（含 FF/RW ±10s 翻译） |
 | `CAR_ANSWER` / `CAR_REJECT` / `CAR_HANGUP` | car | 车机电话键 |
 | `CAR_DIAL` | car | 车机发起拨号（ATD） |
-| `CAR_HOLD` / `CAR_DTMF` | car | 车机保持 / DTMF |
-| `RING_IN` / `CALL_ACTIVE` / `CALL_HELD` / `CALL_ENDED` | app/sys | 通话状态机迁移 |
+| `CAR_HOLD` / `CAR_UNHOLD` / `CAR_DTMF` | car | 车机保持 / 取消保持 / DTMF |
+| `RING_IN` / `CALL_ACTIVE` / `CALL_ENDED` | app/sys/cmd | 通话状态机迁移（detail 带号码；全挂逐路发 CALL_ENDED） |
+| `CALL_WAITING` | app | 通话中第二路来电进入等待（GSM 呼叫等待；detail 带新号码） |
+| `CALL_HELD` | app/cmd/car | 一路被保持（接听等待路自动保持=app，swap/hold=cmd，车机键=car） |
 | `CMD_PLAY/PAUSE/NEXT/PREV/...` | cmd | PC 指令回显（断言"指令已生效"用） |
 | `MEDIA_TRACK_END` / `MEDIA_UPLOAD` / `MEDIA_SCO_RELEASED` | app/cmd | 播完 / 上传 / SCO 释放 |
 | `CALL_AUDIO_END` | app | 通话音频自然播完（loop=0；detail 带文件名，手动 stop 不发） |

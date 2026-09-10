@@ -8,7 +8,8 @@
   python vphone_ctl.py enable-account               # 启用电话账号+设默认去电账号(一次性)
   python vphone_ctl.py status
   python vphone_ctl.py incoming --num 13800138000   # 模拟来电(门C)
-  python vphone_ctl.py dial / answer / hangup / hold / dtmf / audio-bt
+  python vphone_ctl.py dial / answer / hangup / hold / swap / dtmf / audio-bt
+  python vphone_ctl.py hangup --num 13900139000   # 选择性挂某路; --num all 全挂
   python vphone_ctl.py call-audio --name demo.mp3 --loop   # 通话中自定义音频(SCO)
   python vphone_ctl.py track --title 青花瓷 --artist 周杰伦 --dur 229
   python vphone_ctl.py playlist --file demo_pl.txt  # 播放列表(每行: 标题|歌手|专辑|秒|文件名)
@@ -45,7 +46,7 @@ def main():
     ap.add_argument("--port", type=int, default=18800, help="PC 侧本地端口(默认 18800)")
     ap.add_argument("cmd", help="start|grant-perms|enable-account|status|launch|install|events|"
                                 "wait-event|"
-                                "incoming|dial|answer|hangup|hold|dtmf|audio-bt|call-audio|"
+                                "incoming|dial|answer|hangup|hold|swap|dtmf|audio-bt|call-audio|"
                                 "call-audio-stop|auto-outgoing|"
                                 "track|play|pause|next|prev|jump|seek|silence|autoadvance|"
                                 "playlist|playlist-get|upload|files|del|play-audio|media-diag|"
@@ -121,9 +122,11 @@ def main():
         elif c == "answer":
             print(vp.answer())
         elif c == "hangup":
-            print(vp.hangup())
+            print(vp.hangup(number=args.num or None))
         elif c == "hold":
             print(vp.hold(on=args.on != "0"))
+        elif c == "swap":
+            print(vp.swap())
         elif c == "dtmf":
             print(vp.dtmf(key=args.key or ""))
         elif c == "audio-bt":

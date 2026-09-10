@@ -15,6 +15,8 @@ import android.util.Log
  * 门C 核心: managed ConnectionService —— Telecom 绑定本服务创建虚拟呼叫。
  * 车机(HF 角色)通过系统蓝牙栈看到来电/拨号/通话中状态;
  * 车机上的接听/拒接/挂断/保持/DTMF 按键全部落到 VConnection 的回调并落 EventLog。
+ * 多路: 每条 VConnection 持有自己的 CallRec, 回调只动本路 —— 呼叫等待/切换由
+ * CallEngine.activate/holdRec 统一编排"先保持其它 active"。
  */
 class VPhoneConnectionService : ConnectionService() {
 
@@ -29,14 +31,24 @@ class VPhoneConnectionService : ConnectionService() {
             ?: CallEngine.pendingIncomingNumber ?: "13800138000"
         CallEngine.pendingIncomingNumber = null
         Log.i(CallEngine.TAG, "onCreateIncomingConnection 号码=$tel")
-        EventLog.add(EventLog.RING_IN, "cmd", "注入来电 $tel (车机应弹来电UI)")
+        val waiting = CallEngine.hasCalls()   // 通话中来电 = 呼叫等待(判定须在 attach 之前)
+        EventLog.add(
+            EventLog.RING_IN, "cmd",
+            if (waiting) "注入来电 $tel (呼叫等待: 已有通话, 车机应显示等待提示)"
+            else "注入来电 $tel (车机应弹来电UI)"
+        )
+        if (waiting) EventLog.add(
+            EventLog.CALL_WAITING, "app",
+            "第二路来电等待中 $tel, 当前 ${CallEngine.callsDesc()}"
+        )
         return VConnection(tel).apply {
             setAddress(Uri.parse("tel:$tel"), TelecomManager.PRESENTATION_ALLOWED)
             setConnectionCapabilities(
-                Connection.CAPABILITY_MUTE or Connection.CAPABILITY_SUPPORT_HOLD
+                Connection.CAPABILITY_MUTE or Connection.CAPABILITY_SUPPORT_HOLD or
+                    Connection.CAPABILITY_HOLD
             )
             setRinging()
-            CallEngine.attach(this, tel, "ringing")
+            rec = CallEngine.attach(this, tel, "ringing")
         }
     }
 
@@ -55,21 +67,21 @@ class VPhoneConnectionService : ConnectionService() {
         return VConnection(tel).apply {
             setAddress(Uri.parse("tel:$tel"), TelecomManager.PRESENTATION_ALLOWED)
             setConnectionCapabilities(
-                Connection.CAPABILITY_MUTE or Connection.CAPABILITY_SUPPORT_HOLD
+                Connection.CAPABILITY_MUTE or Connection.CAPABILITY_SUPPORT_HOLD or
+                    Connection.CAPABILITY_HOLD
             )
             setDialing()
-            CallEngine.attach(this, tel, "dialing")
-            // 车机拨出(ATD)后模拟对端 3s 摘机 —— 否则车机永远停在"拨号中"
+            val r = CallEngine.attach(this, tel, "dialing")
+            rec = r
+            // 车机拨出(ATD)后模拟对端 3s 摘机 —— 否则车机永远停在"拨号中"。
+            // 按记录身份校验(=== rec): 双通话时不能把别人的路接通
             if (CallEngine.autoAnswerOutgoing) {
-                val conn = this
                 main.postDelayed({
                     try {
-                        if (CallEngine.state == "dialing" && CallEngine.connection == conn) {
-                            conn.setActive()
-                            CallEngine.setState("active")
-                            EventLog.add(
-                                EventLog.CALL_ACTIVE, "app",
-                                "拨出 $tel 自动接通(模拟对端 3s 摘机)"
+                        if (r.state == "dialing") {
+                            CallEngine.activate(
+                                r, EventLog.CALL_ACTIVE, "app",
+                                "拨出 ${r.number} 自动接通(模拟对端 3s 摘机)"
                             )
                         }
                     } catch (_: Throwable) {
@@ -80,13 +92,16 @@ class VPhoneConnectionService : ConnectionService() {
     }
 }
 
-/** 单条虚拟呼叫。车机按键回调 = 门C 判定证据, 全部落 EventLog + logcat(TAG=VPhone)。 */
+/** 单条虚拟呼叫(持有自己的 CallRec)。车机按键回调 = 门C 判定证据, 全部落 EventLog。 */
 class VConnection(private val tel: String) : Connection() {
+
+    internal lateinit var rec: CallEngine.CallRec
 
     private fun answered() {
         EventLog.add(EventLog.CAR_ANSWER, "car", "车机按了【接听】(onAnswer) 号码=$tel")
-        setActive()
-        CallEngine.setState("active")   // 走 setState: 发事件广播, 不直接改字段
+        // stateEvt=null: 车机接听沿用旧例只发 CAR_ANSWER 不发 CALL_ACTIVE;
+        // 若另一路在通话中, activate 内部自动保持它(发 CALL_HELD/app)
+        CallEngine.activate(rec, null, "car", "")
     }
 
     override fun onAnswer() = answered()
@@ -95,37 +110,51 @@ class VConnection(private val tel: String) : Connection() {
 
     override fun onReject() {
         EventLog.add(EventLog.CAR_REJECT, "car", "车机按了【拒接】(onReject) 号码=$tel")
-        setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
-        destroy()
-        CallEngine.clearFromConnection()
+        try {
+            setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
+            destroy()
+        } catch (_: Throwable) {
+        }
+        CallEngine.teardown(rec)
     }
 
     override fun onDisconnect() {
         EventLog.add(EventLog.CAR_HANGUP, "car", "车机按了【挂断】(onDisconnect) 号码=$tel")
-        setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
-        destroy()
-        CallEngine.clearFromConnection()
+        try {
+            setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
+            destroy()
+        } catch (_: Throwable) {
+        }
+        CallEngine.teardown(rec)
     }
 
     override fun onAbort() {
         // Telecom 系统侧主动拆线(如来电长时间未接被系统取消): 不接这层的话
-        // connection 悬挂、状态卡 ringing, 后续来电全被"已有通话"挡死
+        // 记录悬挂、状态卡 ringing, 后续通话全被"已有两路"挡死
         EventLog.add(EventLog.CALL_ENDED, "sys", "系统侧拆线(onAbort) 号码=$tel")
-        setDisconnected(DisconnectCause(DisconnectCause.ERROR))
-        destroy()
-        CallEngine.clearFromConnection()
+        try {
+            setDisconnected(DisconnectCause(DisconnectCause.ERROR))
+            destroy()
+        } catch (_: Throwable) {
+        }
+        CallEngine.teardown(rec)
     }
 
     override fun onHold() {
         EventLog.add(EventLog.CAR_HOLD, "car", "车机按了【保持】(onHold) 号码=$tel")
-        setOnHold()
-        CallEngine.setState("held")
+        try {
+            CallEngine.holdRec(rec, EventLog.CALL_HELD, "car", "车机保持")
+        } catch (_: Throwable) {
+        }
     }
 
     override fun onUnhold() {
         EventLog.add(EventLog.CAR_UNHOLD, "car", "车机取消保持(onUnhold) 号码=$tel")
-        setActive()
-        CallEngine.setState("active")
+        // stateEvt=null: 沿用车机回流只发 CAR_* 的旧例; 若另一路 active 自动保持
+        try {
+            CallEngine.activate(rec, null, "car", "")
+        } catch (_: Throwable) {
+        }
     }
 
     override fun onPlayDtmfTone(c: Char) {

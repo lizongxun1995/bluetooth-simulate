@@ -17,13 +17,19 @@ import android.telecom.TelecomManager
 import android.util.Log
 
 /**
- * 门C 核心引擎: 虚拟电话账号(managed ConnectionService)的呼叫状态机。
+ * 门C 核心引擎: 虚拟电话账号(managed ConnectionService)的多路呼叫状态机。
  * 呼叫能力全部模拟 —— 不需要 SIM、不发起真实蜂窝呼叫。
  * 依据: Android Telecom 官方框架, managed ConnectionService 创建的呼叫
  * "在蓝牙设备(车机/耳机)上可见且可控" —— 车机接听/挂断按键回流到
  * VConnection.onAnswer/onDisconnect, 即门C 判定证据。
  *
- * 状态转换(真机基准: 任何失败/拆线路径都必须归回 idle, 不留悬挂 connection):
+ * 多路模型(第八轮, 对齐真机 GSM 呼叫等待语义):
+ *   - 最多两路: 1 active + 1 (held | ringing等待 | dialing)
+ *   - 通话中 incoming = 呼叫等待(CALL_WAITING); answer 自动保持当前 active
+ *   - 双通话时 hold(on=0)/swap = 切换; 挂掉 active 后 held 不自动恢复(真机行为)
+ *   - 任一时刻最多一路 active —— activate() 统一编排"先保持其它 active"
+ *
+ * 单路状态转换(真机基准: 任何失败/拆线路径都必须归回 idle, 不留悬挂 connection):
  *   idle → ringing   (incoming 注入 / 车机侧无)
  *   idle → dialing   (dial 指令 / 车机 ATD)
  *   ringing → active (answer 指令 / 车机接听 onAnswer)
@@ -39,10 +45,23 @@ object CallEngine {
     private val main = Handler(Looper.getMainLooper())
 
     lateinit var app: Context
-    var state: String = "idle"
-    var number: String = ""
-        private set
-    var connection: Connection? = null
+
+    /** 一路通话记录。conn/state 只在主线程读写(Dispatcher.onMain/Telecom 回调/定时器)。 */
+    class CallRec(val number: String, var conn: Connection?, var state: String)
+
+    private val calls = mutableListOf<CallRec>()
+
+    /** 前景通话(优先级 active > ringing > dialing > held) —— 对外"单通话视图" */
+    private fun foreground(): CallRec? =
+        calls.firstOrNull { it.state == "active" }
+            ?: calls.firstOrNull { it.state == "ringing" }
+            ?: calls.firstOrNull { it.state == "dialing" }
+            ?: calls.firstOrNull { it.state == "held" }
+
+    /** 派生只读视图: 既有读点(CallAudioEngine/MediaEngine/Dispatcher/GUI)零改动 */
+    val state: String get() = foreground()?.state ?: "idle"
+    val number: String get() = foreground()?.number ?: ""
+
     var lastEvent: String = "无"
     /** 车机拨出(ATD)后 3s 自动置通话中(模拟对端摘机); 关掉则停在拨号态等 answer */
     var autoAnswerOutgoing = true
@@ -61,6 +80,7 @@ object CallEngine {
      * 注入来电的目标号码兜底: EMUI(Android 10) 上 addNewIncomingCall 的 extras 里的
      * EXTRA_INCOMING_CALL_ADDRESS 不会被填进 ConnectionRequest.address(恒为 null),
      * ConnectionService 侧用它兜底 —— 否则车机/手机来电界面永远显示 13800138000。
+     * 单槽: 两路注入间隔极近时可能串号, 测试节奏保持 ≥1s 即无碍。
      */
     @Volatile var pendingIncomingNumber: String? = null
 
@@ -110,39 +130,47 @@ object CallEngine {
 
     // ---------------- 呼令(全部模拟, 无真实蜂窝) ----------------
 
+    fun hasCalls(): Boolean = calls.isNotEmpty()
+
+    fun callsDesc(): String =
+        if (calls.isEmpty()) "[]" else calls.joinToString(",", "[", "]") { "${it.state}:${it.number}" }
+
     fun incoming(number: String): String {
-        if (connection != null) return "已有通话(state=$state), 先 hangup"
+        if (calls.size >= 2) return "已有两路通话(GSM 上限), 第三路进不来 ${callsDesc()}"
+        val waiting = calls.isNotEmpty()
         return try {
             val extras = Bundle().apply {
                 putString(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS, number)
             }
             pendingIncomingNumber = number
             telecom().addNewIncomingCall(handle, extras)
-            setState("ringing", number)
             // EMUI 静默失败兜底: 账号未启用时 addNewIncomingCall 不抛异常也不建连接,
-            // 1.5s 后仍无 connection 就回滚 idle —— 否则 state 卡在 ringing,
-            // hangup 又报"无通话"救不回, 后续来电全被"已有通话"挡死
+            // 1.5s 后仍无记录就记事件回滚 —— 不留悬挂状态。判据须带 pendingIncomingNumber:
+            // 建连成功时 onCreateIncomingConnection 会消费掉它; 只查号码在不在的话,
+            // "1.5s 内已被正常挂断"的一路也会被误报成注入失败(设备实测踩过)
             main.postDelayed({
-                if (state == "ringing" && connection == null) {
-                    clearFromConnection()
-                    EventLog.add(EventLog.CALL_ENDED, "app", "注入来电未生效(账号未启用?), 已回滚 idle")
+                if (calls.none { it.number == number } && pendingIncomingNumber == number) {
+                    pendingIncomingNumber = null
+                    EventLog.add(EventLog.CALL_ENDED, "app", "注入来电未生效(账号未启用?), 已回滚: $number")
                 }
             }, 1500)
-            "来电已注入: $number —— 等待车机弹来电UI"
+            if (waiting) "呼叫等待已注入: $number (当前通话不受影响) —— 车机应显示等待来电"
+            else "来电已注入: $number —— 等待车机弹来电UI"
         } catch (e: Exception) {
             "注入来电失败: ${e.message} (多半=电话账号未启用, 先 registerAccount + 手动启用)"
         }
     }
 
     fun dial(number: String): String {
-        if (connection != null) return "已有通话(state=$state), 先 hangup"
+        if (calls.size >= 2) return "已有两路通话(GSM 上限), 无法再拨 ${callsDesc()}"
         return try {
             val extras = Bundle().apply {
                 putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
             }
             markDialFromCmd()
             telecom().placeCall(Uri.parse("tel:" + Uri.encode(number)), extras)
-            "去电已提交: $number —— 车机应显示拨号态, 随后 answer 置通话中"
+            if (calls.isNotEmpty()) "第二路去电已提交: $number —— 接通时当前通话自动保持"
+            else "去电已提交: $number —— 车机应显示拨号态, 随后 answer 置通话中"
         } catch (e: Exception) {
             // 失败不留脏标记: dialFromCmd 若残留, 下次车机 ATD 会被误判成"指令拨出"
             dialFromCmd = false
@@ -150,40 +178,81 @@ object CallEngine {
         }
     }
 
+    /** 接听: 优先 ringing(含呼叫等待), 其次 dialing(手动接通去电)。
+     *  接等待来电时当前 active 自动保持 —— 真机 GSM 行为。 */
     fun answer(): String {
-        val c = connection ?: return "无通话"
+        val rec = calls.firstOrNull { it.state == "ringing" }
+            ?: calls.firstOrNull { it.state == "dialing" }
+            ?: return "无来电/去电可接 ${callsDesc()}"
         return try {
-            c.setActive()
-            setState("active")
-            EventLog.add(EventLog.CALL_ACTIVE, "cmd", "指令接听 → active")
-            "已置为通话中(setActive)"
+            activate(rec, EventLog.CALL_ACTIVE, "cmd", "指令接听 ${rec.number}")
+            "已置为通话中: ${rec.number}"
         } catch (e: Exception) {
             "接听失败: ${e.message}"
         }
     }
 
-    fun hangup(): String {
-        val c = connection ?: return "无通话"
-        EventLog.add(EventLog.CALL_ENDED, "cmd", "指令挂断 ($number)")
+    /** 保持/恢复。on=1 保持当前 active; on=0 恢复 held —— 双通话时即"切换"语义。 */
+    fun hold(on: Boolean): String {
+        if (on) {
+            val rec = calls.firstOrNull { it.state == "active" }
+                ?: return "无可保持的通话(active 才能保持) ${callsDesc()}"
+            return try {
+                holdRec(rec, EventLog.CALL_HELD, "cmd", "指令保持")
+                "已保持: ${rec.number}"
+            } catch (e: Exception) {
+                "保持失败: ${e.message}"
+            }
+        }
+        val rec = calls.firstOrNull { it.state == "held" }
+            ?: return "无保持中的通话可恢复 ${callsDesc()}"
+        val swap = calls.any { it.state == "active" }
         return try {
-            c.setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
-            c.destroy()
-            "已挂断"
+            activate(rec, EventLog.CALL_ACTIVE, "cmd",
+                if (swap) "指令恢复(切换) ${rec.number}" else "指令恢复 ${rec.number}")
+            if (swap) "已切换 → 通话中: ${rec.number}" else "已恢复: ${rec.number}"
         } catch (e: Exception) {
-            "挂断异常: ${e.message}"
-        } finally {
-            clearFromConnection()
+            "恢复失败: ${e.message}"
         }
     }
 
-    fun hold(on: Boolean): String {
-        val c = connection ?: return "无通话"
+    /** 双通话切换: 挂起 active、激活 held(与 hold(on=0) 等价, 语义显式)。 */
+    fun swap(): String {
+        val activeRec = calls.firstOrNull { it.state == "active" }
+        val heldRec = calls.firstOrNull { it.state == "held" }
+        if (activeRec == null || heldRec == null)
+            return "切换需要一路 active + 一路 held ${callsDesc()}"
         return try {
-            if (on) c.setOnHold() else c.setActive()
-            setState(if (on) "held" else "active")
-            "保持: $state"
+            activate(heldRec, EventLog.CALL_ACTIVE, "cmd", "指令切换 → ${heldRec.number}")
+            "已切换 → 通话中: ${heldRec.number}, 保持中: ${activeRec.number}"
         } catch (e: Exception) {
-            "保持失败: ${e.message}"
+            "切换失败: ${e.message}"
+        }
+    }
+
+    /** 挂断。number=null 挂前景(active>ringing>dialing>held, 对齐车机红键);
+     *  number=号码 挂指定一路; number="all" 全挂复位。挂掉 active 后 held 保持 held
+     *  不自动恢复(真机行为), 由 hold(on=0) 手动恢复。 */
+    fun hangup(number: String? = null): String {
+        if (number == "all") {
+            if (calls.isEmpty()) return "本就无通话"
+            val n = calls.size
+            calls.toList().forEach {
+                // teardown 不发事件(契约: 事件由调用方先发), 全挂也要逐路发 CALL_ENDED,
+                // 否则脚本清场后的挂断断言会空窗
+                EventLog.add(EventLog.CALL_ENDED, "cmd", "指令挂断 (${it.number}) [全挂]")
+                teardown(it)
+            }
+            return "已全部挂断(${n}路) ${callsDesc()}"
+        }
+        val rec = (if (number != null) calls.firstOrNull { it.number == number } else foreground())
+            ?: return if (number != null) "没有这路通话: $number ${callsDesc()}" else "无通话"
+        return try {
+            EventLog.add(EventLog.CALL_ENDED, "cmd", "指令挂断 (${rec.number})")
+            teardown(rec)
+            "已挂断: ${rec.number}" + if (calls.isNotEmpty()) " (剩余 ${callsDesc()})" else ""
+        } catch (e: Exception) {
+            "挂断异常: ${e.message}"
         }
     }
 
@@ -201,7 +270,7 @@ object CallEngine {
 
     /** 加分项: 请求把通话音频路由到蓝牙(SCO) —— 观察车机是否建立通话音频链路。 */
     fun audioBluetooth(): String {
-        val c = connection ?: return "无通话"
+        val c = foreground()?.conn ?: return "无通话"
         return try {
             c.setAudioRoute(CallAudioState.ROUTE_BLUETOOTH)
             "已请求蓝牙通话音频路由(SCO)"
@@ -210,30 +279,58 @@ object CallEngine {
         }
     }
 
+    // ---------------- 状态编排(主线程; 车机回流/指令共用) ----------------
+
+    /**
+     * 激活一路 = 先保持其它 active(GSM: 任一时刻最多一路 active), 再 setActive 本路。
+     *  stateEvt 为 null 时不发 CALL_ACTIVE —— 车机接听沿用旧例只发 CAR_ANSWER。
+     */
+    fun activate(rec: CallRec, stateEvt: String?, src: String, msg: String) {
+        calls.filter { it !== rec && it.state == "active" }.forEach {
+            holdRec(it, EventLog.CALL_HELD, "app", "接听/激活 ${rec.number}, 原通话自动保持")
+        }
+        rec.conn?.setActive()
+        rec.state = "active"
+        if (stateEvt != null) EventLog.add(stateEvt, src, "$msg → active")
+        evt("呼叫状态 → active (${rec.number})")
+    }
+
+    fun holdRec(rec: CallRec, stateEvt: String, src: String, msg: String) {
+        rec.conn?.setOnHold()
+        rec.state = "held"
+        EventLog.add(stateEvt, src, "$msg (${rec.number})")
+        evt("呼叫状态 → held (${rec.number})")
+    }
+
+    /** 机械拆线一路(事件由调用方先发): 移除记录; 最后一路才全清(通话音频随末路停)。 */
+    fun teardown(rec: CallRec) {
+        try {
+            rec.conn?.setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
+            rec.conn?.destroy()
+        } catch (_: Throwable) {
+        } finally {
+            calls.removeAll { it === rec }
+            if (calls.isEmpty()) clearAll()
+        }
+    }
+
     // ---------------- 由 VPhoneConnectionService 回调 ----------------
 
-    fun attach(conn: Connection, tel: String, initial: String) {
-        connection = conn
-        number = tel
-        state = initial
+    fun attach(conn: Connection, tel: String, initial: String): CallRec {
+        val rec = CallRec(tel, conn, initial)
+        calls.add(rec)
         evt("呼叫连接建立: $initial 号码=$tel")
+        return rec
     }
 
-    fun setState(s: String, tel: String? = null) {
-        state = s
-        if (tel != null) number = tel
-        evt("呼叫状态 → $s ($number)")
-    }
-
-    /** 通话结束统一清理(指令挂断/车机挂断/拒接/系统拆线共用) —— 真机基准:
-     *  挂断即归 idle、号码清空、通话音频停(SCO 已掉, 残留只会占着播放器)。 */
-    fun clearFromConnection() {
-        connection = null
-        state = "idle"
-        number = ""
+    /** 通话结束统一清理(全部拆完才到这) —— 真机基准: 挂断即归 idle、号码清空、
+     *  通话音频停(SCO 已掉, 残留只会占着播放器)。 */
+    fun clearAll() {
+        calls.clear()
         pendingIncomingNumber = null
         try { CallAudioEngine.stop() } catch (_: Throwable) {}
     }
 
-    fun status(): String = "call=$state number=$number account=[${accountStatus()}]"
+    fun status(): String =
+        "call=$state number=$number calls=${callsDesc()} account=[${accountStatus()}]"
 }

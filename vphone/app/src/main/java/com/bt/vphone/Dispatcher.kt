@@ -42,6 +42,7 @@ object Dispatcher {
         "answer" to "/call/answer",
         "hangup" to "/call/hangup",
         "hold" to "/call/hold",
+        "swap" to "/call/swap",
         "dtmf" to "/call/dtmf",
         "audio_bt" to "/call/audio-bt",
         "auto_outgoing" to "/call/auto-outgoing",
@@ -95,8 +96,10 @@ object Dispatcher {
                 "/call/incoming" -> onMain { CallEngine.incoming(q["number"] ?: "13800138000") }
                 "/call/dial" -> onMain { CallEngine.dial(q["number"] ?: "10086") }
                 "/call/answer" -> onMain { CallEngine.answer() }
-                "/call/hangup" -> onMain { CallEngine.hangup() }
+                // number 省略=挂前景(active>ringing>dialing>held); number=all 全挂
+                "/call/hangup" -> onMain { CallEngine.hangup(q["number"]) }
                 "/call/hold" -> onMain { CallEngine.hold((q["on"] ?: "1") != "0") }
+                "/call/swap" -> onMain { CallEngine.swap() }
                 "/call/dtmf" -> onMain { CallEngine.dtmf(q["key"] ?: "") }
                 "/call/audio-bt" -> onMain { CallEngine.audioBluetooth() }
                 "/call/auto-outgoing" -> onMain { CallEngine.setAutoOutgoing((q["on"] ?: "1") != "0") }
@@ -195,7 +198,7 @@ object Dispatcher {
             "HTTP: curl \"http://<手机IP>:8800/call/incoming?number=13800138000\"\n" +
             "     (PC 亦可 adb forward tcp:18800 tcp:8800 后用 127.0.0.1:18800)\n" +
             "adb : adb shell am broadcast -a com.bt.vphone.CMD --es cmd incoming --es number 13800138000\n" +
-            "路径: /call/incoming|dial|answer|hangup|hold|dtmf|audio-bt|auto-outgoing|audio|audio-status  \n" +
+            "路径: /call/incoming|dial|answer|hangup|hold|swap|dtmf|audio-bt|auto-outgoing|audio|audio-status  \n" +
             "     /media/track|play|pause|next|prev|status|jump|seek|silence|autoadvance|playlist|upload|files|del|diag  \n" +
             "     /bt/state|scan|scan-result|bond|unpair|disconnect|reconnect|allow-car|name|enable  \n" +
             "     /contacts/load|import|clear|count|status  /events?since=N(JSON,断言用)"

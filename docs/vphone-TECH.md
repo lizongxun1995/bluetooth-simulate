@@ -129,8 +129,13 @@ play↔pause 循环干净；双并发 logcat 流各 45/45 行共存；Python 重
 | T5 | seek/缺参数 | — | jump 缺 idx / seek 缺 pos 返回用法错误，不静默用 0（危险默认值） | ✅ |
 | T6 | 来电→接听→挂断 | 挂断后状态归 idle，号码清空 | hangup 清 number/pendingIncomingNumber/CallAudioEngine；onAbort(系统拆线) 同样归零 | ✅ |
 | T7 | 并发联系人写入 | — | AtomicBoolean CAS，第二个批任务被拒"批量任务进行中" | ✅ |
-| T8 | 注入来电失败 | — | 1.5s 未生效自动回滚 idle 并记事件（不留 ringing 死状态） | ✅ |
+| T8 | 注入来电失败 | — | 1.5s 未生效自动回滚 idle 并记事件（不留 ringing 死状态）；判据带 `pendingIncomingNumber` 未消费，1.5s 内正常挂断的一路不误报 | ✅ |
 | T9 | 暂停后路由消失 | 播放器保持暂停，无后台活动 | 供流线程彻底退出（§5 事故修复） | ✅ |
+| T10 | 通话中来电 | 呼叫等待：新路响铃、原路不动，最多 2 路 | waiting 注入（RING_IN+CALL_WAITING），第 3 路明确拒绝 | ✅ |
+| T11 | 接听等待电话 | 原 active 自动保持、新路上线，恒一 active | `answer()` 编排：先 hold 其它 active 再 setActive；手动 hold 后接听同样支持 | ✅ |
+| T12 | 双通话切换 | 互换 active/held | `swap()` / `hold(on=0)` 等价；车机 CHLD 键走 onHold/onUnhold 回调 | ✅ |
+| T13 | 挂一路 | 挂 active 后另一路保持 held 不自动恢复；挂 held 不影响 active | hangup 选择性/前景优先级；恢复须显式 `hold(on=0)` | ✅ |
+| T14 | 通话中拨出 | 新呼叫接通时原通话自动保持 | dial 第二路 + 3s 摘机时 activate（自动 hold 原路） | ✅ |
 | — | 暂停态车机切歌 | 车机上应能切 | 代码侧状态机已对齐(事件+元数据可查)，**待车机实测裁决**（EMUI 是否丢键存疑，见 DEV 清单） | ⏳ |
 
 ## 7. 与真机的已知偏差清单（测试有效性边界）

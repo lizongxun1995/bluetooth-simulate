@@ -19,7 +19,7 @@
     ready → VPhone     → 连接成功: 换 vp 引用+启动代际轮询+环境加固
     connfail → str     → 连接失败提示
     devs  → [dict]     → 蓝牙扫描结果回填列表
-    contacts/media/pos → 状态区刷新 / call → 主线程执行可调用对象
+    contacts/media/pos/callst → 状态区刷新 / call → 主线程执行可调用对象
 · 轮询代际: 每次「连接」成功 _gen+1, 旧代 _evt_poll/_stat_poll 检测到代际
   变化即退出 —— 重复点「连接」不会叠加轮询线程(否则事件双份/进度双刷)。
 """
@@ -117,7 +117,7 @@ class App:
         self.lbl_media.pack(fill="x", padx=8, pady=(0, 3))
 
         # ---- 电话(门C) ----
-        f2 = ttk.LabelFrame(left, text="电话 (门C: 虚拟来电/去电; 车机接听/挂断/拨出回流见事件流)")
+        f2 = ttk.LabelFrame(left, text="电话 (门C: 来电/去电/呼叫等待/保持切换; 车机按键回流见事件流)")
         f2.pack(fill="x", pady=2)
         r3 = ttk.Frame(f2); r3.pack(fill="x", padx=4, pady=2)
         ttk.Label(r3, text="号码:").pack(side="left")
@@ -127,6 +127,7 @@ class App:
                          ("✖挂断", lambda: self.vp.hangup()),
                          ("保持", lambda: self.vp.hold(on=True)),
                          ("恢复", lambda: self.vp.hold(on=False)),
+                         ("⇄切换", lambda: self.vp.swap()),
                          ("拨出", self._dial),
                          ("🎧蓝牙通话音频", lambda: self.vp.audio_bt())):
             ttk.Button(r3, text=text, command=lambda f=fn: self._run(f)).pack(side="left", padx=2)
@@ -145,6 +146,9 @@ class App:
         ttk.Button(r3b, text="▶播放(需通话中)",
                    command=self._call_audio).pack(side="left", padx=4)
         ttk.Button(r3b, text="⏹停止", command=lambda: self._run(self.vp.call_audio_stop)).pack(side="left")
+        # 多路通话状态行(1s 轮询 /status 刷新): 双通话时显示 [active:X,held:Y] 一眼看清
+        self.lbl_call = ttk.Label(f2, text="通话: idle", foreground="#753")
+        self.lbl_call.pack(fill="x", padx=8, pady=(0, 3))
 
         # ---- 联系人 ----
         f2b = ttk.LabelFrame(left, text="联系人 (自定义/批量1w → 车机 PBAP 通讯录压测; 只写 vphone 账号)")
@@ -520,6 +524,15 @@ class App:
                         txt += f"  📄{real.group(1)}"
                     self.q.put(("media", txt))
                     self.q.put(("pos", (int(pos), int(dur))))
+                # 同窗口顺带拉通话状态行(多路: calls=[active:X,held:Y])
+                cs = self.vp.http("/status")
+                mc = re.search(r"call=(\w+) number=(\S*) calls=(\[[^\]]*\])", cs)
+                if mc:
+                    cst, cnum, ccalls = mc.groups()
+                    ctxt = "通话: " + cst + (f" {cnum}" if cnum else "")
+                    if ccalls and ccalls != "[]":
+                        ctxt += f"  {ccalls}"
+                    self.q.put(("callst", ctxt))
                 fail = 0
             except Exception:
                 fail += 1
@@ -657,6 +670,8 @@ class App:
                     mark = "🚗" if e.src == "car" else ("⌨" if e.src == "cmd" else " ")
                     tag = "car" if e.src == "car" else ("bt" if e.type.startswith("BT_") else "cmd")
                     self.log(f"{mark} {e}", tag=tag)
+                elif kind == "callst":
+                    self.lbl_call.config(text=payload)
                 elif kind == "ready":
                     old, self.vp = self.vp, payload
                     if old is not None:

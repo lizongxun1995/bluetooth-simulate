@@ -913,3 +913,52 @@ stop 不误发) ⑥循环 name 无后缀/loop=1/过 dur 回绕恒 playing ⑦媒
 
 产物: APK 878441B 同步 apk/; exe(13MB)/wheel(0.6.0) 重建, wheel 内嵌 APK 字节一致;
 test_lib.py 8 组回归全绿。
+
+**追加：vphone 第八轮 —— 多路通话：呼叫等待 + 保持恢复 + 三方接听**
+
+需求原话: "模拟接电话途中还有电话打进来, 可以保持和恢复, 保持时可以接听三方来电"。
+方案 = Telecom managed ConnectionService 本就支持一个 PhoneAccount 挂多条 Connection,
+呼叫等待就是"通话中再 addNewIncomingCall 一条 ringing 连接"; HFP 侧 +CCWA/双路 CLCC
+由 EMUI 系统栈自动发给车机, vphone 不碰协议层(保真度卖点不变)。
+
+语义(全部对齐真机 GSM, 详见 API 文档 §1.2 引言):
+- 最多 2 路(GSM 上限), 第 3 路 incoming 明确拒绝且零事件;
+- 通话中 incoming = 呼叫等待(RING_IN + 新事件 CALL_WAITING), 原 active 不动;
+- answer 接等待路时原 active 自动保持(真机标准行为); 手动 hold(on=1) 后接听同样支持
+  (场景3 = 需求原话路径, 设备实测通过);
+- swap() / hold(on=0) 双通话时等价(互换 active/held);
+- hangup 无参挂前景(active>ringing>dialing>held, 对齐车机红键), number= 挂指定路,
+  "all" 全挂; 挂掉 active 后 held 保持不自动恢复(真机), hold(on=0) 手动恢复;
+- 通话中 dial = 第二路, 3s 摘机时原 active 自动保持(场景4 实测)。
+
+APK 侧(CallEngine 全重写为 calls 列表 + VConnection 各回调持自己的 CallRec):
+- 对外 state/number 变为前景派生只读属性(active>ringing>dialing>held), 既有读点
+  (CallAudioEngine/MediaEngine/Dispatcher/GUI)零改动;
+- activate() 编排恒一 active: 先 hold 其它 active 再 setActive 本路; 车机接听回流
+  沿用旧例只发 CAR_ANSWER 不发 CALL_ACTIVE, 车机 onHold/onUnhold 对应 CAR_HOLD/CAR_UNHOLD;
+- 挂完最后一路才全清(通话音频随末路停, 中途挂一路 SCO 跟随剩余通话);
+- /status 追加 calls=[active:138…,held:10086] 字段(前缀不变, 兼容既有解析);
+- capabilities 补 CAPABILITY_HOLD(单保持, 无会议/无双 active —— GSM 就没有)。
+- versionCode 2→3, versionName 0.6.0→0.7.0; lib __version__ 0.7.0。
+
+本轮修掉的两个 bug(都是设备验收逮到的):
+1. 注入回滚误报: 1.5s 兜底定时器只查"号码还在不在 calls", 分不清"从未建连"和
+   "1.5s 内已被正常挂断"——快速脚本里等待路走完一生被误报"注入未生效已回滚"。
+   修: 判据加 pendingIncomingNumber 未消费(建连即消费), 只报真正没落地的注入。
+2. hangup(all) 不发 CALL_ENDED: teardown 契约是"事件由调用方先发", all 分支漏发,
+   清场后的挂断断言空窗。修: 全挂逐路先发 CALL_ENDED(带 [全挂] 标记)再 teardown。
+
+PC 侧: lib 加 swap()/hangup(number=None)("all"=全挂), PATHS 加 swap;
+CLI 加 swap 分支 + hangup --num; GUI 加「⇄切换」按钮 + 通话状态行
+(_stat_poll 拉 /status 解析 calls=[…] 刷 Label, 双通话不再靠脑补)。
+
+设备验收(华为 TEL-AN00a, 4 场景全绿): ①等待→接听自动保持→切换→挂前景→held 保留
+不自动恢复→手动恢复 ②三路上限拒绝(明确文案+零事件+状态不动) ③手动保持后接听三方
+(需求原话路径) ④通话中去电第二路 3s 摘机自动保持; 全程 calls=[…] 状态核对 + 零回滚误报。
+车机侧显示(CCWA 等待界面/保持标记/CHLD 切换/剩余通话)入 DEV §3 清单待有车机时裁决。
+
+test_lib.py: 8→10 组(多路指令面 fake: 路径/参数精确匹配含 hangup 三态;
+多路场景回放 fake_staged: 累积历史信封+指令不消耗, 全链路 expect_event 断言)。
+
+产物: APK 960742B 同步 apk/; exe(13MB)/wheel(0.7.0) 重建, wheel 新 venv 验证
+(版本/内嵌 APK/CLI 入口)通过。

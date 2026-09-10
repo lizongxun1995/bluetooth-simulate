@@ -5,7 +5,8 @@
 一台 Android 手机装上 vphone APK 后, 即成为 PC 可远程驱动的蓝牙测试终端:
   门B(媒体): set_track/playlist/play/pause/next/prev + upload_audio(电脑音频→车机播放)
              + 车机按键回流(expect_event CAR_PLAY/CAR_NEXT/...)
-  门C(电话): incoming/dial/answer/hangup/hold/dtmf/audio_bt + call_audio(通话中自定义音频)
+  门C(电话): incoming/dial/answer/hangup/hold/swap/dtmf/audio_bt + call_audio(通话中自定义音频)
+             多路: 呼叫等待(通话中 incoming)/接听自动保持/切换 swap/选择性挂断 hangup(number=)
              + 车机接听/挂断回流(expect_event CAR_ANSWER/CAR_HANGUP/CAR_DIAL/...)
   联系人:    contacts_load(批量1w)/contacts_import(自定义)/contacts_clear —— PBAP 测车机通讯录
   蓝牙:      bt_scan/bt_bond/bt_unpair/bt_reconnect/bt_state/bt_enable (配对不出App)
@@ -49,7 +50,7 @@ REMOTE_PORT = 8800
 DEFAULT_LOCAL_PORT = 18800   # PC 侧 forward 端口(避开本机 8800 常见占用)
 ACCOUNT_ARGS = f"{PKG}/.VPhoneConnectionService VPHONE 0".split()
 
-__version__ = "0.6.0"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
+__version__ = "0.7.0"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
 
 
 # Windows: GUI(windowed exe)无控制台时, 每个 adb 子进程都会新弹一个黑窗 ——
@@ -124,6 +125,7 @@ PATHS = {
     "answer": "/call/answer",
     "hangup": "/call/hangup",
     "hold": "/call/hold",
+    "swap": "/call/swap",
     "dtmf": "/call/dtmf",
     "audio_bt": "/call/audio-bt",
     "auto_outgoing": "/call/auto-outgoing",
@@ -389,25 +391,38 @@ class VPhone:
 
     def incoming(self, *, number="13800138000") -> str:
         """注入来电(Telecom 注入连接, 手机+已连车机同时响铃)。可控可重复,
-        替代真机"打电话过来"。失败(账号未启用等)自动回滚 idle 并在返回文本里说明原因。"""
+        替代真机"打电话过来"。失败(账号未启用等)自动回滚 idle 并在返回文本里说明原因。
+        通话中注入 = 呼叫等待(RING_IN+CALL_WAITING 事件, 当前通话不受影响);
+        已有两路(GSM 上限)时明确拒绝。"""
         return self.cmd("incoming", number=number)
 
     def dial(self, *, number="10086") -> str:
         """模拟本机拨号(手机侧发起, 车机上表现为去电界面)。
-        对端默认 3s 自动接通 —— 见 set_auto_outgoing()。"""
+        对端默认 3s 自动接通 —— 见 set_auto_outgoing()。通话中拨出 = 第二路去电,
+        接通时当前通话自动保持。"""
         return self.cmd("dial", number=number)
 
     def answer(self) -> str:
-        """PC 侧代接当前来电(等价手机上划接听)。车机侧按接听回流为 CAR_ANSWER 事件。"""
+        """PC 侧代接当前来电(等价手机上划接听)。优先接 ringing(含呼叫等待)，
+        其次接通 dialing。接等待来电时当前 active 通话自动保持(真机 GSM 行为)。
+        车机侧按接听回流为 CAR_ANSWER 事件。"""
         return self.cmd("answer")
 
-    def hangup(self) -> str:
-        """挂断当前通话(任意状态), 状态机复位 idle。车机侧挂断回流为 CAR_HANGUP。"""
-        return self.cmd("hangup")
+    def hangup(self, *, number=None) -> str:
+        """挂断。number=None 挂前景通话(active>ringing>dialing>held, 对齐车机红键)；
+        number="号码" 选择性挂某一路；number="all" 全挂复位。
+        挂掉 active 后剩余 held 保持 held 不自动恢复(真机行为), hold(on=False) 手动恢复。"""
+        return self.cmd("hangup", **({"number": number} if number else {}))
 
     def hold(self, *, on=True) -> str:
-        """通话保持/恢复。on=True 保持(车机界面显示"保持中")。"""
+        """通话保持/恢复。on=True 保持当前 active；on=False 恢复 held ——
+        双通话时即"切换"语义(挂起 active、激活 held)。"""
         return self.cmd("hold", on="1" if on else "0")
+
+    def swap(self) -> str:
+        """双通话切换：挂起当前 active、激活 held(与 hold(on=False) 等价, 语义显式)。
+        需要一路 active + 一路 held, 否则返回明确错误。"""
+        return self.cmd("swap")
 
     def dtmf(self, *, key) -> str:
         """发送 DTMF 按键(key='0'-'9','*','#'; 需 active 通话)。

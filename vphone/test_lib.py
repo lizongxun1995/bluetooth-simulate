@@ -41,6 +41,26 @@ def fake_vp(*envelopes, repeat_last=True):
     return vp
 
 
+def fake_staged(*envelopes):
+    """多路场景回放专用: 只有 /events 拉取推进信封(指令路径直接回 ok 不消耗),
+    信封内容 = 服务端累积历史(since 过滤后即"本步新事件"), 命中事件的 id 就是下一步水位。"""
+    vp = VPhone.__new__(VPhone)
+    vp.wait_timeout = 15
+    state = {"i": 0}
+
+    def http(path, *, timeout=6, since=0, **params):
+        if path != "/events":
+            return "ok(指令模拟)"
+        i = min(state["i"], len(envelopes) - 1)
+        state["i"] += 1
+        env = envelopes[i]
+        return json.dumps({"last": env["last"],
+                           "events": [e for e in env["events"] if e["id"] > since]})
+
+    vp.http = http
+    return vp
+
+
 def ev(eid, etype, src="car", detail="", ts=1700000000000):
     return {"id": eid, "ts": ts, "type": etype, "src": src, "detail": detail}
 
@@ -115,9 +135,90 @@ def test_timeout0_peek():
     ok("timeout=0 = 非阻塞探一眼(单次快照)")
 
 
+def test_multicall_commands():
+    """多路指令面: lib→APK 的路径/参数精确匹配(hangup number 三态 / swap / hold on 映射)。"""
+    sent = []
+
+    def http(path, *, timeout=6, since=0, **params):
+        sent.append((path, params))
+        return json.dumps({"last": 0, "events": []})
+
+    vp = VPhone.__new__(VPhone)
+    vp.wait_timeout = 15
+    vp.http = http
+    vp.incoming(number="13900139000")
+    vp.answer()
+    vp.hold(on=True)
+    vp.hold(on=False)
+    vp.swap()
+    vp.hangup(number="13900139000")
+    vp.hangup()
+    vp.hangup(number="all")
+    assert sent == [
+        ("/call/incoming", {"number": "13900139000"}),
+        ("/call/answer", {}),
+        ("/call/hold", {"on": "1"}),
+        ("/call/hold", {"on": "0"}),
+        ("/call/swap", {}),
+        ("/call/hangup", {"number": "13900139000"}),
+        ("/call/hangup", {}),                 # number=None 不带参数 → APK 挂前景
+        ("/call/hangup", {"number": "all"}),
+    ]
+    ok("多路指令: incoming/answer/hold(1|0)/swap/hangup(None|号码|all) 路径参数精确")
+
+
+def test_multicall_scenario():
+    """多路时序回放: 等待→接听自动保持→切换→挂前景→恢复→全挂逐路 CALL_ENDED。
+    信封=累积历史(仿真服务端); 命中事件 id 作下一步 since —— 与真机脚本同构。"""
+    A, B = "13800138000", "13900139000"
+    hist = {}
+
+    def h(*new):
+        hist.update({e["id"]: e for e in new})
+        return {"last": max(hist), "events": list(hist.values())}
+
+    vp = fake_staged(
+        {"last": 0, "events": []},
+        h(ev(1, "RING_IN", "cmd", f"注入来电 {A} (车机应弹来电UI)")),
+        h(ev(2, "CALL_ACTIVE", "cmd", f"指令接听 {A} → active")),
+        h(ev(3, "RING_IN", "cmd", f"注入来电(等待路) {B}"),
+          ev(4, "CALL_WAITING", "app", f"第二路来电等待中 {B}")),
+        h(ev(5, "CALL_HELD", "app", f"接听 {B}, 原通话自动保持 ({A})"),
+          ev(6, "CALL_ACTIVE", "cmd", f"指令接听 {B} → active")),
+        h(ev(7, "CALL_HELD", "cmd", f"指令切换: 保持 ({B})"),
+          ev(8, "CALL_ACTIVE", "cmd", f"指令切换 → {A} → active")),
+        h(ev(9, "CALL_ENDED", "cmd", f"指令挂断 ({A})")),
+        h(ev(10, "CALL_ACTIVE", "cmd", f"指令恢复 {B} → active")),
+        h(ev(11, "CALL_ENDED", "cmd", f"指令挂断 ({B}) [全挂]")),
+    )
+
+    def step(label, fn, *expects):
+        m = step.m
+        fn()
+        for evt, detail in expects:
+            hit = vp.expect_event(evt_type=evt, detail=detail, since=m,
+                                  timeout=2, because=label)
+            assert hit.type == evt and detail in hit.detail
+            m = hit.id
+        step.m = m
+
+    step.m = vp.event_watermark()                     # 对齐水位 0
+    step("A 来电", lambda: vp.incoming(number=A), ("RING_IN", A))
+    step("接听 A", vp.answer, ("CALL_ACTIVE", A))
+    step("B 等待", lambda: vp.incoming(number=B), ("CALL_WAITING", B))
+    step("接听 B(A 自动保持)", vp.answer, ("CALL_HELD", A), ("CALL_ACTIVE", B))
+    step("切换", vp.swap, ("CALL_HELD", B), ("CALL_ACTIVE", A))
+    step("挂前景 A", vp.hangup, ("CALL_ENDED", A))
+    step("恢复 B", lambda: vp.hold(on=False), ("CALL_ACTIVE", B))
+    step("全挂", lambda: vp.hangup(number="all"), ("CALL_ENDED", B))
+    ok("多路场景回放: 等待/自动保持/切换/挂前景/恢复/全挂 全链路事件断言")
+
+
 def test_kwargs_only():
     vp = fake_vp({"last": 0, "events": []})
     for bad in (lambda: vp.incoming("123"),
+                lambda: vp.hangup("138"),
+                lambda: vp.swap("x"),
                 lambda: vp.set_track("t", "a"),
                 lambda: vp.upload_audio("x.mp3"),
                 lambda: vp.bt_bond("CARKIT-1"),
@@ -156,7 +257,7 @@ def test_signature_contract():
 if __name__ == "__main__":
     print("== vphone_lib 无设备单测 ==")
     for t in (test_vevent, test_events_snapshot, test_wait_event, test_expect_event,
-              test_expect_no_event, test_timeout0_peek, test_kwargs_only,
-              test_signature_contract):
+              test_expect_no_event, test_timeout0_peek, test_multicall_commands,
+              test_multicall_scenario, test_kwargs_only, test_signature_contract):
         t()
     print(f"== 全部通过 ({PASS} 组) ==")
