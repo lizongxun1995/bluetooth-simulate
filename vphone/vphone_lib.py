@@ -51,7 +51,7 @@ REMOTE_PORT = 8800
 DEFAULT_LOCAL_PORT = 18800   # PC 侧 forward 端口(避开本机 8800 常见占用)
 ACCOUNT_ARGS = f"{PKG}/.VPhoneConnectionService VPHONE 0".split()
 
-__version__ = "0.8.0"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
+__version__ = "0.8.1"   # 单一版本真源: pyproject.toml 动态引用此处(dynamic attr)
 
 
 # Windows: GUI(windowed exe)无控制台时, 每个 adb 子进程都会新弹一个黑窗 ——

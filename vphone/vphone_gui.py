@@ -18,7 +18,7 @@
     tevt  → event dict → 结构化事件(🚗car/⌨cmd 高亮)
     ready → VPhone     → 连接成功: 换 vp 引用+启动代际轮询+环境加固
     connfail → str     → 连接失败提示
-    devs  → [dict]     → 蓝牙扫描结果回填列表
+    devs  → [dict]     → 蓝牙扫描结果回填列表(经🔍过滤框模糊过滤, 显示=_bt_shown 视图)
     contacts/media/pos/callst/caudiotxt/caudio → 状态区刷新 / call → 主线程执行可调用对象
 · 轮询代际: 每次「连接」成功 _gen+1, 旧代 _evt_poll/_stat_poll 检测到代际
   变化即退出 —— 重复点「连接」不会叠加轮询线程(否则事件双份/进度双刷)。
@@ -38,6 +38,17 @@ from vphone_lib import VPhone, VPhoneError, VEvent
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus")
 
 
+def bt_filter(devs, query):
+    """蓝牙列表模糊过滤(纯函数, 便于脱离 GUI 单测)。
+    query 按空格分词, 每个词都须不区分大小写地出现在「蓝牙名 MAC」里;
+    例: "carkit-1 00:11" 能命中 "CARKIT-1  00:11:22:33:44:55"。空 query = 原样全返。"""
+    tokens = query.strip().lower().split()
+    if not tokens:
+        return list(devs)
+    return [d for d in devs
+            if all(t in f"{d['name']} {d['mac']}".lower() for t in tokens)]
+
+
 class App:
     def __init__(self, root, serial=None):
         import tkinter as tk
@@ -51,6 +62,7 @@ class App:
         self.pool = ThreadPoolExecutor(max_workers=3)
         self.vp: VPhone | None = None
         self.bt_devs: list[dict] = []
+        self._bt_shown: list[dict] = []   # 过滤后的显示视图(选中类按钮索引它, 不索引全量)
         self._evt_stop = threading.Event()
         self._gen = 0            # 连接代际: 每次连接成功 +1, 旧轮询线程见代际变化即退出
 
@@ -193,6 +205,16 @@ class App:
         self.e_btname.pack(side="left", padx=4)
         ttk.Button(r4b, text="✏改名", command=self._bt_rename).pack(side="left")
         ttk.Label(r4b, text="(车机重连后显示新名)", foreground="#888").pack(side="left", padx=4)
+        # 模糊过滤行: 输入即过滤(空格分词, 命中蓝牙名/MAC), Esc 清空 —— 扫出几十台找车机用
+        r4c = ttk.Frame(f3); r4c.pack(fill="x", padx=4, pady=2)
+        ttk.Label(r4c, text="🔍过滤:").pack(side="left")
+        self.var_btfilter = tk.StringVar()
+        self.var_btfilter.trace_add("write", self._render_bt)
+        self.e_btfilter = ttk.Entry(r4c, textvariable=self.var_btfilter)
+        self.e_btfilter.pack(side="left", fill="x", expand=True, padx=4)
+        self.e_btfilter.bind("<Escape>", lambda _e: self.var_btfilter.set(""))
+        self.lbl_btfilter = ttk.Label(r4c, text="", foreground="#888")
+        self.lbl_btfilter.pack(side="left")
         self.lb_bt = tk.Listbox(f3, height=5)
         self.lb_bt.pack(fill="both", expand=True, padx=4, pady=2)
         # 双击扫描结果 = 配对(与扫描完成提示语一致, 之前只提示没绑定)
@@ -609,20 +631,39 @@ class App:
     def _reconnect_sel(self):
         """列表选中了设备就重连它; 没选就自动重连第一台已配对设备。"""
         sel = self.lb_bt.curselection()
-        target = self.bt_devs[sel[0]]["mac"] if sel else None
+        target = self._bt_shown[sel[0]]["mac"] if sel else None
         self._run(lambda: self.vp.bt_reconnect(target=target))
 
     def _disconnect_sel(self):
         """断开选中设备(没选=当前已连接那台), 保持配对 —— 车机断连/回连测试用。"""
         sel = self.lb_bt.curselection()
-        target = self.bt_devs[sel[0]]["mac"] if sel else None
+        target = self._bt_shown[sel[0]]["mac"] if sel else None
         self._run(lambda: self.vp.bt_disconnect(mac=target))
 
     def _allow_car_sel(self):
         """授权选中设备(或第一台已连HFP设备)访问联系人/通话记录(PBAP)。"""
         sel = self.lb_bt.curselection()
-        target = self.bt_devs[sel[0]]["mac"] if sel else None
+        target = self._bt_shown[sel[0]]["mac"] if sel else None
         self._run(lambda: self.vp.bt_allow_car(target=target))
+
+    def _render_bt(self, *_a):
+        """按过滤框重画蓝牙列表(bt_devs 全量 → _bt_shown 视图)。
+        过滤变化尽量保住原选中项(按 MAC 复选), 选中类按钮只索引 _bt_shown。"""
+        keep = None
+        sel = self.lb_bt.curselection()
+        if sel and sel[0] < len(self._bt_shown):
+            keep = self._bt_shown[sel[0]]["mac"]
+        self._bt_shown = bt_filter(self.bt_devs, self.var_btfilter.get())
+        self.lb_bt.delete(0, "end")
+        for i, d in enumerate(self._bt_shown):
+            self.lb_bt.insert("end", f"{d['name']}  {d['mac']}  {d['rssi']}dBm")
+            if keep is not None and d["mac"] == keep:
+                self.lb_bt.selection_set(i)
+        tokens = self.var_btfilter.get().strip().split()
+        if tokens:
+            self.lbl_btfilter.config(text=f"匹配 {len(self._bt_shown)}/{len(self.bt_devs)} 台")
+        else:
+            self.lbl_btfilter.config(text=f"共 {len(self.bt_devs)} 台" if self.bt_devs else "")
 
     def _scan(self):
         if self.vp is None:
@@ -643,7 +684,7 @@ class App:
         if not sel:
             self.log("!! 先在列表选中设备")
             return None
-        return self.bt_devs[sel[0]]
+        return self._bt_shown[sel[0]]
 
     def _bond_sel(self):
         d = self._sel_dev()
@@ -734,9 +775,7 @@ class App:
                     self.log("!! 连接失败: " + payload)
                 elif kind == "devs":
                     self.bt_devs = payload
-                    self.lb_bt.delete(0, "end")
-                    for d in payload:
-                        self.lb_bt.insert("end", f"{d['name']}  {d['mac']}  {d['rssi']}dBm")
+                    self._render_bt()
                 elif kind == "contacts":
                     self.lbl_contacts.config(text=f"计数: {payload}")
                 elif kind == "media":
