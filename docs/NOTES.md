@@ -1106,3 +1106,21 @@ setActive 拉起来, Telecom 状态错乱(车机看 HFP 还有通话, 手机侧�
   无前缀不误入, 零排除表;
 - 纯重构零行为变化(发射的字符串原样), 但按纪律 APK 版本对齐: 0.8.4/versionCode 7,
   lib/wheel 0.8.4, 三产物重建内嵌一致。test_lib 14 组全绿; 签名契约仍 77。
+
+## 十一、GitHub 公开镜像机制(公司 Gitea → 个人公开仓) — 2026-09-22
+
+公司 Gitea 保持唯一真源; 个人 GitHub 仓(lizongxun1995/bluetooth-simulate, 公开)作为对外镜像,
+由本机外置流水线清洗后**单向**同步(用户裁决: 保持 Public, 做清洗版):
+
+- **流水线**: `..s-public-sync\sync.sh`(在项目仓外, **永不入库** —— replacements.txt 里写着
+  真实序列号/MAC/内网地址) : push origin → 本地 `--no-local` 镜像克隆 → git filter-repo
+  (占位符化: 手机序列号/车机 MAC/内网 Git 地址/车型 CARKIT-1/公司包名/车机板型号/本机用户目录;
+  mailmap: 公司邮箱→GitHub noreply) → 全历史敏感串自检(命中即拒推) → push github;
+- **确定性**: 规则不变时旧提交洗后哈希不变, 新提交普通 push 叠加即可; 只有改了规则才需 force;
+- **本机两个坑已解**: ①仓外裸访问内网 Gitea URL 会 404(凭据只在项目仓上下文生效) → 流水线
+  改从本地仓克隆; ②git 出网走本机代理 127.0.0.1:7897, GitHub 首次 OAuth 已存 GCM, 后续无感;
+- **纪律**: 公开仓永不直接提交, 一切改动走 Gitea + sync.sh; 台架换设备后新序列号/MAC
+  第一时间进 replacements.txt; APK 二进制已验证(解压全文扫描)不含敏感串, 可随仓发布。
+
+首推内容: 28 个提交全历史清洗, 自检+公网 raw/API 复核双通过(敏感串 0 命中/占位符在位/
+作者全部 noreply)。skills 目录快照另建了本地仓(~/.agents/skills), 待单独的 GitHub 仓库 URL。
